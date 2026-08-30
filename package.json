@@ -1,12 +1,16 @@
 {
-  "name": "trekipelago-expo-app",
-  "version": "1.0.0",
+  "name": "trekipelago",
+  "version": "0.0.1",
   "main": "index.js",
   "dependencies": {
+    "@types/node": "^26.4.0",
+    "@types/react": "~19.2.4",
+    "@types/react-dom": "~19.2.3",
     "expo": "~57.0.18",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
-    "react-native": "0.86.3"
+    "react-native": "0.86.3",
+    "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
