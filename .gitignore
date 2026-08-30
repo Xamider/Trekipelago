@@ -68,3 +68,6 @@ pids
 *.pid
 *.seed
 *.pid.lock
+# EAS / local credentials
+.eas/
+.easignore
