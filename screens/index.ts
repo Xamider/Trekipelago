@@ -1,1 +1,1 @@
-export const screens = {};
+export * from './MapScreen';

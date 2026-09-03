@@ -1,1 +1,3 @@
-export const components = {};
+export * from './KatowiceMap';
+export * from './MapHeader';
+export * from './UnsupportedPlatform';
