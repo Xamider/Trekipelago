@@ -1,1 +1,2 @@
-export const services = {};
+export * from './pointsOfInterest';
+export * from './usePointsOfInterest';
