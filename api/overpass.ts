@@ -1,10 +1,10 @@
-import { KATOWICE } from '../data';
+import { PLACEHOLDER_LOCATION } from '../data';
 import type { OverpassResponse } from '../types';
 
 const overpassQuery = `[out:json][timeout:12];
 (
-  node["amenity"="cafe"]["name"](around:2000,${KATOWICE.latitude},${KATOWICE.longitude});
-  node["amenity"="restaurant"]["name"](around:2000,${KATOWICE.latitude},${KATOWICE.longitude});
+  node["amenity"="cafe"]["name"](around:2000,${PLACEHOLDER_LOCATION.latitude},${PLACEHOLDER_LOCATION.longitude});
+  node["amenity"="restaurant"]["name"](around:2000,${PLACEHOLDER_LOCATION.latitude},${PLACEHOLDER_LOCATION.longitude});
 );
 out 30;`;
 

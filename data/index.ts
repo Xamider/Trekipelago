@@ -1,1 +1,1 @@
-export * from './locations';
+export * from './placeholderLocation';

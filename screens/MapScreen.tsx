@@ -1,6 +1,6 @@
 import { Platform, StyleSheet, View } from 'react-native';
 
-import { KatowiceMap, MapHeader, UnsupportedPlatform } from '../components';
+import { LocationMap, MapHeader, UnsupportedPlatform } from '../components';
 import { usePointsOfInterest } from '../services';
 
 export function MapScreen() {
@@ -10,7 +10,7 @@ export function MapScreen() {
 
   return (
     <View style={styles.container}>
-      <KatowiceMap pointsOfInterest={pointsOfInterest} />
+      <LocationMap pointsOfInterest={pointsOfInterest} />
       <MapHeader placesCount={pointsOfInterest.length} />
     </View>
   );

@@ -10,7 +10,7 @@ export function MapHeader({ placesCount }: MapHeaderProps) {
     <SafeAreaView pointerEvents="none" style={styles.overlay}>
       <View style={styles.header}>
         <Text style={styles.title}>Trekipelago</Text>
-        <Text style={styles.subtitle}>Katowice • {placesCount} miejsc z OpenStreetMap</Text>
+        <Text style={styles.subtitle}>Lokalizacja testowa • {placesCount} miejsc z OpenStreetMap</Text>
       </View>
     </SafeAreaView>
   );

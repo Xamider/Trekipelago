@@ -1,19 +1,19 @@
 import { Platform, StyleSheet } from 'react-native';
 import MapView, { Circle, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 
-import { KATOWICE, KATOWICE_INITIAL_REGION } from '../data';
+import { PLACEHOLDER_INITIAL_REGION, PLACEHOLDER_LOCATION } from '../data';
 import type { PointOfInterest } from '../types';
 
-type KatowiceMapProps = {
+type LocationMapProps = {
   pointsOfInterest: PointOfInterest[];
 };
 
-export function KatowiceMap({ pointsOfInterest }: KatowiceMapProps) {
+export function LocationMap({ pointsOfInterest }: LocationMapProps) {
   return (
     <MapView
       style={styles.map}
       provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
-      initialRegion={KATOWICE_INITIAL_REGION}
+      initialRegion={PLACEHOLDER_INITIAL_REGION}
       showsUserLocation
       showsMyLocationButton
       scrollEnabled
@@ -22,16 +22,16 @@ export function KatowiceMap({ pointsOfInterest }: KatowiceMapProps) {
       pitchEnabled
     >
       <Circle
-        center={KATOWICE}
+        center={PLACEHOLDER_LOCATION}
         radius={220}
         fillColor="rgba(37, 99, 235, 0.16)"
         strokeColor="rgba(37, 99, 235, 0.55)"
         strokeWidth={1}
       />
       <Marker
-        coordinate={KATOWICE}
+        coordinate={PLACEHOLDER_LOCATION}
         title="Twoja lokalizacja"
-        description="Punkt testowy: centrum Katowic"
+        description="Statyczny punkt testowy"
         pinColor="#2563eb"
       />
       {pointsOfInterest.map((point) => (
