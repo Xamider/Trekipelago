@@ -3,22 +3,46 @@
   "version": "0.0.1",
   "main": "index.js",
   "dependencies": {
+    "@expo-google-fonts/geist": "^0.4.2",
+    "@expo-google-fonts/jetbrains-mono": "^0.4.1",
+    "@expo-google-fonts/outfit": "^0.4.3",
+    "@react-native-community/slider": "5.2.0",
+    "@react-navigation/bottom-tabs": "^7.18.18",
+    "@react-navigation/native": "^7.3.18",
+    "@react-navigation/native-stack": "^7.18.10",
     "@types/node": "^26.4.0",
     "@types/react": "~19.2.4",
     "@types/react-dom": "~19.2.3",
-    "expo": "~57.0.18",
+    "expo": "~57.0.20",
+    "expo-dev-client": "~57.0.18",
+    "expo-font": "~57.0.3",
+    "expo-image": "~57.0.4",
+    "expo-linear-gradient": "~57.0.1",
+    "expo-location": "~57.0.16",
+    "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "^57.0.3",
+    "expo-task-manager": "~57.0.16",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "react-native-maps": "1.27.2",
     "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "android": "expo run:android",
+    "android:metro": "expo start --dev-client --android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "build:android:dev": "eas build --platform android --profile development",
+    "build:android:preview": "eas build --platform android --profile preview",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test game/*.test.ts storage/*.test.ts tracking/*.test.ts"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "tsx": "^4.23.13"
+  }
 }

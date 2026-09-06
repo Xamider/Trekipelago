@@ -1,9 +1,24 @@
 export const theme = {
   colors: {
-    background: '#ffffff',
-    text: '#111827',
-    primary: '#2563eb',
-    accent: '#10b981',
+    background: '#0d1703',
+    surface: '#142405',
+    border: '#223e08',
+    text: '#f0fee7',
+    primary: '#70f40b',
+    secondary: '#a2f76e',
+    muted: '#6da6a4',
+    subtle: '#4d8a0f',
+    accent: '#0dd3c3',
+    danger: '#ff6b6b',
+  },
+  fonts: {
+    display: 'Outfit_700Bold',
+    black: 'Outfit_900Black',
+    semibold: 'Outfit_600SemiBold',
+    body: 'Geist_400Regular',
+    medium: 'Geist_500Medium',
+    bold: 'Geist_700Bold',
+    mono: 'JetBrainsMono_700Bold',
   },
   spacing: {
     xs: 4,
@@ -12,4 +27,28 @@ export const theme = {
     lg: 16,
     xl: 24,
   },
+};
+
+// Original exported assets from the supplied Figma design, stored locally.
+export const designAssets = {
+  topo: require('../assets/design/topo.png'),
+  archipelago: require('../assets/design/archipelago.png'),
+  homeCompass: require('../assets/design/homeCompass.svg'),
+  compass: require('../assets/design/compass.svg'),
+  back: require('../assets/design/back.svg'),
+  pin: require('../assets/design/pin.svg'),
+  chevron: require('../assets/design/chevron.svg'),
+  settings: require('../assets/design/settings.svg'),
+  eyeOff: require('../assets/design/eyeOff.svg'),
+  alert: require('../assets/design/alert.svg'),
+  toggleOn: require('../assets/design/toggleOn.svg'),
+  toggleOff: require('../assets/design/toggleOff.svg'),
+  down: require('../assets/design/down.svg'),
+  orb: require('../assets/design/orb.svg'),
+  map: require('../assets/design/map.svg'),
+  console: require('../assets/design/console.svg'),
+  amber: require('../assets/design/amber.svg'),
+  cyan: require('../assets/design/cyan.svg'),
+  white: require('../assets/design/white.svg'),
+  userPulse: require('../assets/design/userPulse.svg'),
 };

@@ -5,7 +5,7 @@ export function UnsupportedPlatform() {
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.title}>Trekipelago</Text>
-      <Text style={styles.text}>Mapa Google jest obecnie dostępna w aplikacji Android.</Text>
+      <Text style={styles.text}>Trekipelago is currently available on Android.</Text>
     </SafeAreaView>
   );
 }
@@ -16,8 +16,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#0D1703',
   },
-  title: { color: '#0f172a', fontSize: 28, fontWeight: '800' },
-  text: { color: '#475569', fontSize: 16, marginTop: 8, textAlign: 'center' },
+  title: { color: '#F0FEE7', fontSize: 28, fontWeight: '800' },
+  text: { color: '#A2F76E', fontSize: 16, marginTop: 8, textAlign: 'center' },
 });
