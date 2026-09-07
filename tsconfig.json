@@ -3,7 +3,8 @@
   "compilerOptions": {
     "strict": true,
     "noEmit": true,
-    "allowJs": false
+    "allowJs": false,
+    "types": ["node", "react"]
   },
   "include": [
     "**/*.ts",
