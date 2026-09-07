@@ -3,19 +3,20 @@ import { Linking, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useIsFocused } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { LocationMap, UnsupportedPlatform } from '../components';
 import { AppHeader, AppText, AssetIcon, formatDistance } from '../components/ui';
-import { isFreshFix } from '../game/engine';
+import { isFreshFix, SPEED_LEVELS_MPS } from '../game/engine';
 import { usePointsOfInterest } from '../services';
-import { useGame } from '../state/GameProvider';
+import { useGameStatus } from '../state/GameProvider';
 import { designAssets, theme } from '../theme';
 
 export function MapScreen() {
-  const { save, preferences, busy, error, status, now, collectOrb } = useGame();
+  const { save, preferences, busy, error, status, now, collectOrb } = useGameStatus();
   const focused = useIsFocused();
   const [recenterVersion, setRecenterVersion] = useState(0);
+  const insets = useSafeAreaInsets();
   const freshFix = save ? isFreshFix(save, now) : false;
   const { pointsOfInterest, loading: placesLoading, error: placesError } = usePointsOfInterest(
     save?.lastFix ?? null,
@@ -32,6 +33,11 @@ export function MapScreen() {
     : !save.tracking ? 'Tracking paused. Resume to keep exploring.'
       : !freshFix ? status || 'Waiting for an accurate GPS fix…'
         : 'Tap light orbs inside your region to collect them.';
+
+  const currentSpeedLimitMps = SPEED_LEVELS_MPS[Math.min(preferences.maxSpeedLevel || 0, SPEED_LEVELS_MPS.length - 1)] ?? SPEED_LEVELS_MPS[0];
+  const maxSpeedStr = preferences.distanceUnit === 'mi'
+    ? `${(currentSpeedLimitMps * 2.23694).toFixed(1)} mi/h`
+    : `${(currentSpeedLimitMps * 3.6).toFixed(1)} km/h`;
 
   return (
     <View style={styles.container}>
@@ -55,16 +61,19 @@ export function MapScreen() {
         </View>
       </View>}
 
-      <SafeAreaView edges={['top', 'left', 'right']} pointerEvents="box-none" style={styles.overlay}>
+      <View pointerEvents="box-none" style={styles.overlay}>
         <LinearGradient pointerEvents="box-none" colors={['rgba(13,23,3,0.98)', 'rgba(13,23,3,0.82)', 'rgba(13,23,3,0)']}
-          style={styles.headerGradient}>
-          <AppHeader title="Map Explorer" actionLabel="Recenter map"
-            onAction={() => setRecenterVersion((value) => value + 1)} />
+          style={[styles.headerGradient, { paddingTop: insets.top }]}>
+          <AppHeader title="Map Explorer" />
           {save && <View pointerEvents="none" style={styles.stats}>
             <View style={styles.statRow}>
               <View style={styles.statDistance}>
                 <AppText style={styles.label}>Distance</AppText>
                 <AppText style={styles.value}>{formatDistance(save.distanceMeters, preferences.distanceUnit)}</AppText>
+              </View>
+              <View style={styles.statSpeed}>
+                <AppText style={styles.label}>Max speed</AppText>
+                <AppText style={styles.value}>{maxSpeedStr}</AppText>
               </View>
               <View style={styles.statChance}>
                 <AppText style={styles.label}>Spawn chance</AppText>
@@ -86,20 +95,26 @@ export function MapScreen() {
             </View>
           </View>}
         </LinearGradient>
-      </SafeAreaView>
+      </View>
 
       <View pointerEvents="box-none" style={styles.footer}>
-        {locationReady && <View pointerEvents="none" style={styles.mapHint}>
-          <View style={[styles.statusDot, { backgroundColor: canCollect ? theme.colors.primary : theme.colors.muted }]} />
-          <AppText style={styles.hintText}>{mapHint}</AppText>
-        </View>}
-        {preferences.showPOI && <View style={styles.attributionRow}>
-          <AppText style={styles.placesStatus}>{placesLoading ? 'Loading nearby places…' : placesError ?? `${pointsOfInterest.length} nearby places`}</AppText>
-          <Pressable accessibilityRole="link" accessibilityLabel="OpenStreetMap attribution"
-            onPress={() => { void Linking.openURL('https://www.openstreetmap.org/copyright').catch(() => {}); }}>
-            <AppText style={styles.attribution}>© OpenStreetMap</AppText>
+        <View style={styles.footerOverlay}>
+          {preferences.showPOI ? <View style={styles.attributionRow}>
+            <AppText style={styles.placesStatus}>{placesLoading ? 'Loading nearby places…' : placesError ?? `${pointsOfInterest.length} nearby places`}</AppText>
+            <Pressable accessibilityRole="link" accessibilityLabel="OpenStreetMap attribution"
+              onPress={() => { void Linking.openURL('https://www.openstreetmap.org/copyright').catch(() => {}); }}>
+              <AppText style={styles.attribution}>© OpenStreetMap</AppText>
+            </Pressable>
+          </View> : <View style={{ flex: 1 }} />}
+          
+          <Pressable 
+            style={styles.recenterButton} 
+            accessibilityRole="button" 
+            accessibilityLabel="Recenter map"
+            onPress={() => setRecenterVersion((value) => value + 1)}>
+            <AssetIcon name="userPulse" size={24} color={theme.colors.background} />
           </Pressable>
-        </View>}
+        </View>
       </View>
     </View>
   );
@@ -111,12 +126,13 @@ const styles = StyleSheet.create({
   headerGradient: { paddingBottom: 24 },
   stats: { marginHorizontal: 16, marginTop: 4, borderRadius: 16, borderWidth: 1.5, borderColor: '#1a2e05', backgroundColor: 'rgba(13,23,3,0.92)', paddingHorizontal: 12, paddingVertical: 10, gap: 8 },
   statRow: { flexDirection: 'row', gap: 12, alignItems: 'center' },
-  statDistance: { flex: 1, minWidth: 0, gap: 4 },
-  statChance: { flex: 1, minWidth: 0, gap: 4 },
+  statDistance: { flex: 2, minWidth: 0, gap: 4 },
+  statSpeed: { flex: 2, minWidth: 0, gap: 4 },
+  statChance: { flex: 2, minWidth: 0, gap: 4 },
   statOrbs: { alignItems: 'flex-end', gap: 4 },
   label: { color: theme.colors.secondary, fontFamily: theme.fonts.medium, fontSize: 12, lineHeight: 16 },
-  value: { fontFamily: theme.fonts.bold, fontSize: 14, lineHeight: 20 },
-  chanceValue: { color: theme.colors.primary, fontFamily: theme.fonts.bold, fontSize: 14, lineHeight: 20 },
+  value: { fontFamily: theme.fonts.bold, fontSize: 13, lineHeight: 20 },
+  chanceValue: { color: theme.colors.primary, fontFamily: theme.fonts.bold, fontSize: 13, lineHeight: 20 },
   orbsRow: { flexDirection: 'row', gap: 6, alignItems: 'center' },
   caption: { color: theme.colors.muted, fontSize: 11, lineHeight: 15, flexShrink: 1 },
   recoveryTrack: { height: 6, borderRadius: 3, borderWidth: 1, borderColor: '#1a2e05', backgroundColor: theme.colors.background, overflow: 'hidden' },
@@ -127,11 +143,10 @@ const styles = StyleSheet.create({
   waitingContent: { maxWidth: 320, paddingHorizontal: 24, gap: 12, alignItems: 'center', marginTop: 100 },
   waitingTitle: { fontFamily: theme.fonts.display, fontSize: 22, lineHeight: 28, textAlign: 'center' },
   waitingText: { color: theme.colors.secondary, textAlign: 'center', fontSize: 14 },
-  footer: { position: 'absolute', bottom: 8, left: 16, right: 16, gap: 8 },
-  mapHint: { backgroundColor: 'rgba(13,23,3,0.92)', borderWidth: 1, borderColor: theme.colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  statusDot: { width: 6, height: 6, borderRadius: 3 },
-  hintText: { flex: 1, fontSize: 11, lineHeight: 16, color: theme.colors.secondary },
-  attributionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, backgroundColor: 'rgba(13,23,3,0.9)', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 3 },
+  footer: { position: 'absolute', bottom: 16, left: 16, right: 16, gap: 12 },
+  footerOverlay: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
+  recenterButton: { width: 56, height: 56, borderRadius: 28, backgroundColor: theme.colors.primary, alignItems: 'center', justifyContent: 'center', elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84 },
+  attributionRow: { flex: 1, marginRight: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, backgroundColor: 'rgba(13,23,3,0.9)', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 3 },
   placesStatus: { flex: 1, color: theme.colors.muted, fontSize: 10, lineHeight: 14 },
   attribution: { color: theme.colors.secondary, fontSize: 10, lineHeight: 14, textDecorationLine: 'underline' },
 });

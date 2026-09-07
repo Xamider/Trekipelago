@@ -16,7 +16,9 @@ export function usePointsOfInterest(center: Coordinates | null, enabled: boolean
   const [retryTick, setRetryTick] = useState(0);
   const cacheCenter = useRef<Coordinates | null>(null);
   const pending = useRef<{ center: Coordinates; controller: AbortController } | null>(null);
-  const failedAt = useRef(0);
+  
+  // Low 7 Fix: Store failure location alongside timestamp so moving away resets it
+  const failure = useRef<{ at: number; center: Coordinates } | null>(null);
   const latitude = center?.latitude;
   const longitude = center?.longitude;
 
@@ -39,18 +41,22 @@ export function usePointsOfInterest(center: Coordinates | null, enabled: boolean
     const nextCenter = { latitude, longitude };
     if (pending.current
       && distanceBetween(nextCenter, pending.current.center) < REFRESH_DISTANCE_METERS) return;
+      
     if (cacheCenter.current
       && distanceBetween(nextCenter, cacheCenter.current) < REFRESH_DISTANCE_METERS) {
-      // Moving back into the cached area makes a request for the previous area obsolete,
-      // and the cache is already satisfied, so any stale failure/backoff no longer applies.
       pending.current?.controller.abort();
       pending.current = null;
       setLoading(false);
       setError(null);
-      failedAt.current = 0;
+      failure.current = null;
       return;
     }
-    if (Date.now() - failedAt.current < RETRY_DELAY_MS) return;
+    
+    // Evaluate if the backoff applies to our current region
+    if (failure.current && Date.now() - failure.current.at < RETRY_DELAY_MS 
+      && distanceBetween(nextCenter, failure.current.center) < REFRESH_DISTANCE_METERS) {
+      return;
+    }
 
     pending.current?.controller.abort();
     const controller = new AbortController();
@@ -63,11 +69,11 @@ export function usePointsOfInterest(center: Coordinates | null, enabled: boolean
         if (controller.signal.aborted || pending.current?.controller !== controller) return;
         setPointsOfInterest(toPointsOfInterest(response));
         cacheCenter.current = nextCenter;
-        failedAt.current = 0;
+        failure.current = null;
       })
       .catch(() => {
         if (controller.signal.aborted || pending.current?.controller !== controller) return;
-        failedAt.current = Date.now();
+        failure.current = { at: Date.now(), center: nextCenter };
         setError('Nearby places are temporarily unavailable.');
       })
       .finally(() => {
@@ -77,5 +83,6 @@ export function usePointsOfInterest(center: Coordinates | null, enabled: boolean
       });
   }, [enabled, latitude, longitude, retryTick]);
 
-  return { pointsOfInterest: enabled ? pointsOfInterest : [], loading, error };
+  // Low 8 Fix: Hide POI errors implicitly when POIs get disabled
+  return { pointsOfInterest: enabled ? pointsOfInterest : [], loading: enabled && loading, error: enabled ? error : null };
 }

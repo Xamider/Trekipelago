@@ -10,6 +10,7 @@ export const theme = {
     subtle: '#4d8a0f',
     accent: '#0dd3c3',
     danger: '#ff6b6b',
+    nav: '#050c02',
   },
   fonts: {
     display: 'Outfit_700Bold',

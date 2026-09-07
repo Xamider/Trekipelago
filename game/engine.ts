@@ -10,8 +10,17 @@ export const DEFAULT_SOLO_CONFIG: Readonly<SoloConfig> = Object.freeze({
 export const SPAWN_INTERVAL_MS = 10_000;
 export const FRESH_FIX_MS = 30_000;
 const EARTH_RADIUS_METERS = 6_371_000;
-const MAX_ACCURACY_METERS = 25;
-const MAX_SPEED_METERS_PER_SECOND = 50;
+const MAX_ACCURACY_METERS = 2000;
+
+export const SPEED_LEVELS_MPS = [
+  3.5,
+  7.5,
+  12.5,
+  19.5,
+  27.8,
+  38.9
+];
+
 const radians = (degrees: number) => degrees * Math.PI / 180;
 const degrees = (angle: number) => angle * 180 / Math.PI;
 type Coordinates = Pick<LocationSample, 'latitude' | 'longitude'>;
@@ -53,7 +62,7 @@ export function createSave(config: SoloConfig, sessionId: string, now: number): 
     collectedCount: 0,
     lastFix: null,
     distanceAnchor: null,
-    lastProcessedTimestamp: now - 1,
+    lastProcessedTimestamp: 0,
     nextSpawnAt: now + SPAWN_INTERVAL_MS,
     orbs: [],
     activity: [],
@@ -98,7 +107,7 @@ export function distanceBetween(a: Coordinates, b: Coordinates): number {
 function validFix(fix: LocationSample, now: number): boolean {
   return validCoordinates(fix)
     && Number.isFinite(fix.accuracy) && fix.accuracy >= 0 && fix.accuracy <= MAX_ACCURACY_METERS
-    && Number.isFinite(fix.timestamp) && fix.timestamp >= 0 && fix.timestamp <= now;
+    && Number.isFinite(fix.timestamp) && fix.timestamp >= 0 && fix.timestamp <= now + 30000;
 }
 
 export function isFreshFix(save: SoloSnapshot, now: number): boolean {
@@ -112,16 +121,19 @@ function recoverFromClockRollback(save: SoloSnapshot, now: number): SoloSnapshot
     ...save,
     lastFix: null,
     distanceAnchor: null,
-    lastProcessedTimestamp: now - 1,
+    lastProcessedTimestamp: 0,
     nextSpawnAt: now + SPAWN_INTERVAL_MS,
     updatedAt: now,
   };
 }
 
-export function applyLocations(save: SoloSnapshot, sessionId: string, fixes: LocationSample[], now: number): SoloSnapshot {
+export function applyLocations(save: SoloSnapshot, sessionId: string, fixes: LocationSample[], now: number, maxSpeedLevel: number = 0): SoloSnapshot {
   if (!save.tracking || save.sessionId !== sessionId) return save;
   let next = recoverFromClockRollback(save, now);
   const ordered = [...fixes].sort((a, b) => a.timestamp - b.timestamp);
+  
+  const speedLimitMps = SPEED_LEVELS_MPS[Math.min(maxSpeedLevel, SPEED_LEVELS_MPS.length - 1)] ?? SPEED_LEVELS_MPS[0];
+
   for (const sourceFix of ordered) {
     if (!validFix(sourceFix, now) || sourceFix.timestamp <= next.lastProcessedTimestamp) continue;
     const fix = { ...sourceFix };
@@ -130,7 +142,7 @@ export function applyLocations(save: SoloSnapshot, sessionId: string, fixes: Loc
     // Mark even an implausible fix as processed, so replaying a native batch is idempotent.
     next = { ...next, lastProcessedTimestamp: fix.timestamp, updatedAt: now };
     if (previous && gap <= FRESH_FIX_MS
-      && distanceBetween(previous, fix) / (gap / 1_000) > MAX_SPEED_METERS_PER_SECOND) continue;
+      && distanceBetween(previous, fix) / (gap / 1_000) > speedLimitMps) continue;
 
     let distance = 0;
     let anchor = next.distanceAnchor;

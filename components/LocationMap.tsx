@@ -55,7 +55,6 @@ function MapPoint({ coordinate, icon, title, description, onPress, disabled = fa
 
   useEffect(() => {
     if (!imageLoaded) return;
-    // Capture the loaded SVG before stopping continuous marker redraws.
     const timer = setTimeout(() => setTrackImage(false), 250);
     return () => clearTimeout(timer);
   }, [imageLoaded]);
@@ -68,6 +67,7 @@ function MapPoint({ coordinate, icon, title, description, onPress, disabled = fa
     tracksViewChanges={trackImage}
     opacity={disabled ? 0.45 : 1}
     zIndex={icon === 'orb' ? 3 : 1}
+    stopPropagation={true}
     onPress={disabled ? undefined : onPress}
     accessibilityLabel={icon === 'orb' ? 'Collect light orb' : title}
     accessibilityRole={icon === 'orb' ? 'button' : undefined}
@@ -112,6 +112,7 @@ export function LocationMap({ location, radiusMeters, orbs, mapStyle, pointsOfIn
       showsCompass={false}
       toolbarEnabled={false}
       showsIndoors={false}
+      moveOnMarkerPress={false}
       mapPadding={{ top: 170, right: 16, bottom: 50, left: 16 }}
       onMapReady={() => setReady(true)}
       onPanDrag={() => { following.current = false; }}

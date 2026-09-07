@@ -9,7 +9,6 @@ import { clearTrackingError, getTrackingError, reportTrackingError } from './err
 export const LOCATION_TASK = 'trekipelago-solo-location';
 let commandTail: Promise<unknown> = Promise.resolve();
 
-/** A benign, pre-mutation failure (validation or permission denial). The caller's existing save and native tracker are untouched. */
 export class GameActionError extends Error {}
 
 function command<T>(work: () => Promise<T>) {
@@ -26,11 +25,29 @@ export async function stopNativeTracking() {
   }
 }
 
-/** A write failure must stop the native producer too, even without a mounted UI. */
 export async function haltAfterFailure(error: unknown) {
   reportTrackingError(error);
   try { await stopNativeTracking(); }
   catch (stopError) { reportTrackingError(`${String(error)} Tracking could not be stopped: ${String(stopError)}`); }
+}
+
+export function wakeGps() {
+  if (AppState.currentState !== 'active') return;
+  // Fire an immediate, high-accuracy fetch. This forces the Android LocationService out of background throttling
+  // and immediately pushes the fresh fix to our UI and background listeners without restarting the whole service.
+  void Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High })
+    .then(async (location) => {
+      const current = await repository.read();
+      if (!current.save?.tracking) return;
+      const fixes = [{
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        accuracy: location.coords.accuracy ?? Infinity,
+        timestamp: location.timestamp,
+      }];
+      await repository.update(save => save ? applyLocations(save, save.sessionId, fixes, Date.now(), current.preferences.maxSpeedLevel || 0) : save);
+    })
+    .catch(() => undefined);
 }
 
 if (Platform.OS === 'android' && !TaskManager.isTaskDefined(LOCATION_TASK)) {
@@ -39,16 +56,17 @@ if (Platform.OS === 'android' && !TaskManager.isTaskDefined(LOCATION_TASK)) {
       if (getTrackingError()) return;
       if (error) throw new Error(error.message);
       if (!data?.locations?.length) return;
-      const current = (await repository.read()).save;
-      if (!current?.tracking) return;
-      const expectedSession = current.sessionId;
+      const current = await repository.read();
+      if (!current.save?.tracking) return;
+      const expectedSession = current.save.sessionId;
+      const maxSpeedLevel = current.preferences.maxSpeedLevel || 0;
       const fixes = data.locations.map(location => ({
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
         accuracy: location.coords.accuracy ?? Infinity,
         timestamp: location.timestamp,
       }));
-      await repository.update(save => save ? applyLocations(save, expectedSession, fixes, Date.now()) : save);
+      await repository.update(save => save ? applyLocations(save, expectedSession, fixes, Date.now(), maxSpeedLevel) : save);
     } catch (error) { await haltAfterFailure(error); }
   });
 }
@@ -79,14 +97,10 @@ async function ensurePermissions(request: boolean) {
     background = await Location.requestBackgroundPermissionsAsync();
   }
   if (!background.granted) throw new Error('Allow location all the time in Android settings, then tap Resume.');
+  
   if (request && Number(Platform.Version) >= 33) {
-    // This controls the ongoing tracking notification, not the future game-alert preferences.
-    // Denial must not prevent a location foreground service from starting.
     await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
   }
-  // Android's settings handoff may finish before this Activity has focus again.
-  // This only applies to an active settings handoff; a passive check must not wait on it,
-  // or backgrounding during the check would be misread as a permission failure.
   if (request && AppState.currentState !== 'active') {
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => { subscription.remove(); reject(new Error('Return to Trekipelago and tap Resume.')); }, 30_000);
@@ -121,23 +135,23 @@ export function createSoloGame(config: SoloConfig) {
     try {
       await ensurePermissions(true);
     } catch (error) {
-      // Nothing has been touched yet: an existing journey's tracker must keep running.
       throw new GameActionError(error instanceof Error ? error.message : String(error));
     }
-    const previous = (await repository.read()).save;
-    await stopNativeTracking();
+
+    const isAlreadyRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
+    if (!isAlreadyRunning) {
+      try {
+        await startNativeTracking();
+      } catch (error) {
+        throw error; 
+      }
+    }
+
     const id = sessionId();
     await repository.update(() => createSave(config, id, Date.now()));
-    try {
-      await startNativeTracking();
-      clearTrackingError();
-    } catch (error) {
-      // Roll back to the previous journey rather than permanently losing its progress.
-      await repository.update(save => save?.sessionId === id
-        ? (previous ? { ...previous, tracking: false, updatedAt: Date.now() } : null)
-        : save);
-      throw error;
-    }
+    clearTrackingError();
+    // Instantly poke the GPS so the new game doesn't sit on a "Waiting..." screen
+    wakeGps();
   });
 }
 
@@ -145,18 +159,35 @@ export function resumeSoloTracking(requestPermissions = true) {
   return command(async () => {
     const current = (await repository.read()).save;
     if (!current) return;
+
+    if (!requestPermissions && AppState.currentState !== 'active') {
+      return;
+    }
+
     await ensurePermissions(requestPermissions);
-    await stopNativeTracking();
+    const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
+    if (!isRunning) {
+      try { 
+        await startNativeTracking(); 
+        clearTrackingError(); 
+      }
+      catch (error) { 
+        await haltAfterFailure(error); 
+        throw error; 
+      }
+    } else {
+      clearTrackingError();
+    }
+    
     const id = sessionId();
     await repository.update(save => save ? setTracking(save, true, id, Date.now()) : save);
-    try { await startNativeTracking(); clearTrackingError(); }
-    catch (error) { await haltAfterFailure(error); throw error; }
+    // Ping the sensor to wake it up in case it was asleep
+    wakeGps();
   });
 }
 
 export function pauseSoloTracking() {
   return command(async () => {
-    // Invalidate callbacks before awaiting the native stop operation.
     try {
       await repository.update(save => save ? setTracking(save, false, sessionId(), Date.now()) : save);
     } finally { await stopNativeTracking(); }

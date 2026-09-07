@@ -5,7 +5,7 @@ import type { SoloConfig, SoloSnapshot } from '../game/types';
 import { repository } from '../storage/database';
 import { clearTrackingError, getTrackingError, subscribeTrackingErrors } from '../tracking/errors';
 import { ForegroundClock } from '../tracking/foregroundClock';
-import { checkTrackingPermissions, createSoloGame, GameActionError, haltAfterFailure, pauseSoloTracking, resumeSoloTracking, stopNativeTracking } from '../tracking/location';
+import { checkTrackingPermissions, createSoloGame, GameActionError, haltAfterFailure, pauseSoloTracking, resumeSoloTracking, stopNativeTracking, wakeGps } from '../tracking/location';
 import { DEFAULT_PREFERENCES, type AppPreferences } from './preferences';
 
 interface GameContextValue {
@@ -14,8 +14,6 @@ interface GameContextValue {
   loading: boolean;
   busy: boolean;
   error: string | null;
-  status: string;
-  now: number;
   createGame(config: SoloConfig): Promise<boolean>;
   resume(): Promise<boolean>;
   pause(): Promise<void>;
@@ -32,7 +30,6 @@ export function GameProvider({ children }: PropsWithChildren) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(getTrackingError);
-  const [now, setNow] = useState(Date.now);
   const saveRef = useRef(save);
   const clock = useRef(new ForegroundClock()).current;
   const busyRef = useRef(false);
@@ -59,7 +56,11 @@ export function GameProvider({ children }: PropsWithChildren) {
     const id = saveRef.current?.sessionId;
     await repository.update(current => current && current.sessionId === id && clock.permits(epoch)
       ? resetSpawnClock(current, Date.now()) : current);
+    
+    // Check permissions and force wake the GPS if tracking is currently active
     if (!busyRef.current) await checkTrackingPermissions();
+    if (saveRef.current?.tracking) wakeGps();
+    
     await refresh();
   }, [clock, refresh]);
 
@@ -94,27 +95,35 @@ export function GameProvider({ children }: PropsWithChildren) {
     const focusSubscription = AppState.addEventListener('focus', () => { void foreground().catch(fail); });
     let working = false;
     let ticks = 0;
+    
     const timer = setInterval(() => {
       if (AppState.currentState !== 'active') return;
-      setNow(Date.now());
       if (working || busyRef.current || getTrackingError()) return;
       working = true;
       const epoch = clock.capture();
       const id = saveRef.current?.sessionId;
       void (async () => {
         try {
-          // Avoid a transactional read on every tick: only touch the database once a roll is actually due.
-          const dueForSpawn = id && saveRef.current?.tracking && clock.permits(epoch)
-            && saveRef.current.nextSpawnAt <= Date.now();
-          if (dueForSpawn) {
-            await repository.update(current => current && current.sessionId === id
-              ? rollSpawn(current, id, Date.now(), clock.permits(epoch) && !getTrackingError(), Math.random) : current);
+          const currentSave = saveRef.current;
+          const isTracking = currentSave?.tracking;
+          
+          if (isTracking && id && currentSave) {
+            const rightNow = Date.now();
+            const dueForSpawn = clock.permits(epoch) && currentSave.nextSpawnAt <= rightNow;
+            if (dueForSpawn) {
+              await repository.update(current => current && current.sessionId === id
+                ? rollSpawn(current, id, rightNow, clock.permits(epoch) && !getTrackingError(), Math.random) : current);
+            }
           }
-          if (++ticks % 2 === 0) {
+          
+          ticks++;
+          if (ticks % 2 === 0 && isTracking) {
             const updatedAt = await repository.peekUpdatedAt();
             if (updatedAt !== (saveRef.current?.updatedAt ?? null)) await refresh();
           }
-          if (ticks % 10 === 0) await checkTrackingPermissions();
+          if (ticks % 10 === 0 && isTracking) {
+            await checkTrackingPermissions();
+          }
         } catch (reason) { await fail(reason); }
         finally { working = false; }
       })();
@@ -125,7 +134,6 @@ export function GameProvider({ children }: PropsWithChildren) {
       clearInterval(timer);
       stateSubscription.remove(); blurSubscription.remove(); focusSubscription.remove();
       unsubscribe(); unsubscribeErrors();
-      // Screen/provider lifetimes do not own the native tracker. Only Pause stops a journey.
     };
   }, [clock, fail, foreground, refresh]);
 
@@ -139,14 +147,13 @@ export function GameProvider({ children }: PropsWithChildren) {
       await refresh();
       clearTrackingError();
       busyRef.current = false;
-      await foreground();
+      await foreground().catch(fail);
       return true;
     } catch (reason) {
       if (reason instanceof GameActionError) {
-        // Nothing was mutated: leave any existing journey and its tracker running untouched.
         busyRef.current = false;
         await refresh();
-        await foreground();
+        await foreground().catch(fail);
         Alert.alert('Could not start', reason.message);
         return false;
       }
@@ -157,10 +164,7 @@ export function GameProvider({ children }: PropsWithChildren) {
   }
 
   const context: GameContextValue = {
-    save, preferences, loading, busy, error, now,
-    status: loading ? 'Loading your journey…' : error ? 'Tracking needs attention'
-      : !save ? 'Ready for a new journey' : !save.tracking ? 'Tracking paused'
-        : isFreshFix(save, now) ? 'Tracking your distance' : 'Waiting for precise GPS…',
+    save, preferences, loading, busy, error,
     createGame: config => action(() => createSoloGame(config)),
     resume: () => action(() => resumeSoloTracking(true)),
     pause: async () => { await action(pauseSoloTracking); },
@@ -180,7 +184,6 @@ export function GameProvider({ children }: PropsWithChildren) {
     retry: async () => {
       await action(async () => {
         const snapshot = await refresh();
-        // Check a write as well as a read before clearing a persistence failure.
         await repository.updatePreferences({});
         if (snapshot.save?.tracking) await resumeSoloTracking(true);
         else { await stopNativeTracking(); clearTrackingError(); }
@@ -195,4 +198,30 @@ export function useGame() {
   const context = useContext(GameContext);
   if (!context) throw new Error('useGame must be used inside GameProvider.');
   return context;
+}
+
+export function useAppClock(intervalMs = 1000) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    function start() { timer = setInterval(() => setNow(Date.now()), intervalMs); }
+    if (AppState.currentState === 'active') start();
+    const sub = AppState.addEventListener('change', state => {
+      clearInterval(timer);
+      if (state === 'active') { setNow(Date.now()); start(); }
+    });
+    return () => { clearInterval(timer); if (sub) sub.remove(); };
+  }, [intervalMs]);
+  return now;
+}
+
+export function useGameStatus() {
+  const context = useGame();
+  const now = useAppClock();
+  const hasRecentGps = context.save?.lastFix ? (now - context.save.lastFix.timestamp) <= 60000 : false;
+  const status = context.loading ? 'Loading your journey...' : context.error ? 'Tracking needs attention'
+      : !context.save ? 'Ready for a new journey' : !context.save.tracking ? 'Tracking paused'
+        : hasRecentGps ? 'Tracking your distance' : 'Waiting for precise GPS...';
+  
+  return { ...context, status, now };
 }

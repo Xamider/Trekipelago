@@ -1,6 +1,7 @@
 {
   "name": "trekipelago",
   "version": "0.0.2",
+  "author": "Mateusz Sekreta & Bartłomiej Babik",
   "main": "index.ts",
   "dependencies": {
     "@expo-google-fonts/geist": "^0.4.2",
