@@ -4,8 +4,9 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator, BottomTabBar } from '@react-navigation/bottom-tabs';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
+import { Feather } from '@expo/vector-icons';
 
-import { AppScreen, AppText, AssetIcon } from '../components/ui';
+import { AppScreen, AppText } from '../components/ui';
 import { ArchipelagoScreen } from '../screens/ArchipelagoScreen';
 import { ConsoleScreen } from '../screens/ConsoleScreen';
 import { HomeScreen } from '../screens/HomeScreen';
@@ -78,7 +79,11 @@ function ExpeditionTabs() {
       tabBarActiveTintColor: theme.colors.primary,
       tabBarInactiveTintColor: theme.colors.subtle,
       tabBarLabelStyle: styles.tabLabel,
-      tabBarIcon: ({ focused, color }) => <View style={[styles.tabIcon, focused && styles.activeTabIcon]}><AssetIcon name={route.name === 'Map' ? 'map' : 'console'} size={20} color={color} /></View>,
+      tabBarIcon: ({ focused, color }) => (
+        <View style={[styles.tabIcon, focused && styles.activeTabIcon]}>
+          <Feather name={route.name === 'Map' ? 'map' : 'terminal'} size={20} color={color} />
+        </View>
+      ),
       sceneStyle: { backgroundColor: theme.colors.background },
     })}>
     <Tabs.Screen name="Map" component={MapScreen} />

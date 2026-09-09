@@ -2,12 +2,13 @@ import { Alert, AppState, PermissionsAndroid, Platform } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { applyLocations, createSave, setTracking, validateConfig } from '../game/engine';
-import type { SoloConfig } from '../game/types';
+import type { SoloConfig, SoloSnapshot } from '../game/types';
 import { repository } from '../storage/database';
 import { clearTrackingError, getTrackingError, reportTrackingError } from './errors';
 
 export const LOCATION_TASK = 'trekipelago-solo-location';
 let commandTail: Promise<unknown> = Promise.resolve();
+let foregroundWatcherSubscription: Location.LocationSubscription | null = null;
 
 export class GameActionError extends Error {}
 
@@ -20,6 +21,7 @@ function command<T>(work: () => Promise<T>) {
 const sessionId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 
 export async function stopNativeTracking() {
+  stopForegroundWatcher();
   if (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK)) {
     await Location.stopLocationUpdatesAsync(LOCATION_TASK);
   }
@@ -31,10 +33,59 @@ export async function haltAfterFailure(error: unknown) {
   catch (stopError) { reportTrackingError(`${String(error)} Tracking could not be stopped: ${String(stopError)}`); }
 }
 
+/**
+ * Foreground location watcher: ensures real-time, uninterrupted high-accuracy GPS fixes
+ * while the app is visible on screen, preventing the GPS hardware from sleeping.
+ */
+export async function startForegroundWatcher() {
+  if (Platform.OS !== 'android') return;
+  if (foregroundWatcherSubscription) return;
+  if (AppState.currentState !== 'active') return;
+
+  try {
+    const permissions = await Location.getForegroundPermissionsAsync();
+    if (!permissions.granted) return;
+
+    foregroundWatcherSubscription = await Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 2000,
+        distanceInterval: 0,
+      },
+      async (location) => {
+        if (AppState.currentState !== 'active') return;
+        const current = await repository.read();
+        if (!current.save?.tracking) return;
+
+        const fixes = [{
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          accuracy: location.coords.accuracy ?? Infinity,
+          timestamp: location.timestamp,
+        }];
+        const maxSpeedLevel = Math.max(current.save?.speedLevel || 0, current.preferences.maxSpeedLevel || 0);
+        await repository.update(save => save ? applyLocations(save, save.sessionId, fixes, Date.now(), maxSpeedLevel) : save);
+      }
+    );
+  } catch {
+    // If watching fails temporarily, wakeGps watchdog handles fallback
+  }
+}
+
+export function stopForegroundWatcher() {
+  if (foregroundWatcherSubscription) {
+    try {
+      foregroundWatcherSubscription.remove();
+    } catch {
+      // Ignore cleanup error
+    }
+    foregroundWatcherSubscription = null;
+  }
+}
+
 export function wakeGps() {
   if (AppState.currentState !== 'active') return;
-  // Fire an immediate, high-accuracy fetch. This forces the Android LocationService out of background throttling
-  // and immediately pushes the fresh fix to our UI and background listeners without restarting the whole service.
+  // Fire an immediate, high-accuracy fetch to kick the Android Location Provider
   void Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High })
     .then(async (location) => {
       const current = await repository.read();
@@ -45,11 +96,29 @@ export function wakeGps() {
         accuracy: location.coords.accuracy ?? Infinity,
         timestamp: location.timestamp,
       }];
-      await repository.update(save => save ? applyLocations(save, save.sessionId, fixes, Date.now(), current.preferences.maxSpeedLevel || 0) : save);
+      const maxSpeedLevel = Math.max(current.save?.speedLevel || 0, current.preferences.maxSpeedLevel || 0);
+      await repository.update(save => save ? applyLocations(save, save.sessionId, fixes, Date.now(), maxSpeedLevel) : save);
     })
-    .catch(() => undefined);
+    .catch(() => {
+      // Fallback with balanced accuracy if high accuracy times out
+      void Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
+        .then(async (location) => {
+          const current = await repository.read();
+          if (!current.save?.tracking) return;
+          const fixes = [{
+            latitude: location.coords.latitude,
+            longitude: location.coords.longitude,
+            accuracy: location.coords.accuracy ?? Infinity,
+            timestamp: location.timestamp,
+          }];
+          const maxSpeedLevel = Math.max(current.save?.speedLevel || 0, current.preferences.maxSpeedLevel || 0);
+          await repository.update(save => save ? applyLocations(save, save.sessionId, fixes, Date.now(), maxSpeedLevel) : save);
+        })
+        .catch(() => undefined);
+    });
 }
 
+// Background JS entrypoint for location deliveries
 if (Platform.OS === 'android' && !TaskManager.isTaskDefined(LOCATION_TASK)) {
   TaskManager.defineTask<{ locations: Location.LocationObject[] }>(LOCATION_TASK, async ({ data, error }) => {
     try {
@@ -58,8 +127,14 @@ if (Platform.OS === 'android' && !TaskManager.isTaskDefined(LOCATION_TASK)) {
       if (!data?.locations?.length) return;
       const current = await repository.read();
       if (!current.save?.tracking) return;
+      
+      const isForeground = AppState.currentState === 'active';
+      if (!isForeground && !current.save.backgroundUnlocked) {
+        return; // Drop locations entirely if background locked and app not active
+      }
+      
       const expectedSession = current.save.sessionId;
-      const maxSpeedLevel = current.preferences.maxSpeedLevel || 0;
+      const maxSpeedLevel = Math.max(current.save.speedLevel || 0, current.preferences.maxSpeedLevel || 0);
       const fixes = data.locations.map(location => ({
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
@@ -76,56 +151,127 @@ function explainBackgroundPermission(): Promise<void> {
     'Keep your walk counting',
     'Allow location all the time on the next screen to count distance while your phone is locked. Spawning pauses in the background. You can stop tracking at any time with Pause.',
     [
-      { text: 'Not now', style: 'cancel', onPress: () => reject(new Error('Background location is needed to start tracking. Your save is unchanged.')) },
+      { text: 'Cancel', style: 'cancel', onPress: () => reject(new Error('Background permission explanation cancelled.')) },
       { text: 'Continue', onPress: () => resolve() },
     ],
-    { cancelable: false },
   ));
 }
 
-async function ensurePermissions(request: boolean) {
-  if (Platform.OS !== 'android') throw new Error('Solo tracking is available on Android.');
-  if (!await TaskManager.isAvailableAsync()) throw new Error('Install the Android development build to play Solo. Background tracking is unavailable in Expo Go.');
-  if (!await Location.hasServicesEnabledAsync()) throw new Error('Turn on phone location services, then try again.');
-  let foreground = await Location.getForegroundPermissionsAsync();
-  if (!foreground.granted && request) foreground = await Location.requestForegroundPermissionsAsync();
-  if (!foreground.granted) throw new Error('Allow precise location in Android settings to start tracking.');
-  if (foreground.android?.accuracy === 'coarse') throw new Error('Enable precise location in Android settings to track your walk.');
-  let background = await Location.getBackgroundPermissionsAsync();
-  if (!background.granted && request) {
+async function ensurePermissions(requestIfMissing: boolean): Promise<void> {
+  if (Platform.OS !== 'android') throw new Error('Location tracking is only supported on Android.');
+
+  const foreground = await Location.getForegroundPermissionsAsync();
+  if (!foreground.granted) {
+    if (!requestIfMissing) throw new Error('Location access is required to track your movement.');
+    const nextForeground = await Location.requestForegroundPermissionsAsync();
+    if (!nextForeground.granted) throw new Error('Location access was denied.');
+  }
+
+  const background = await Location.getBackgroundPermissionsAsync();
+  if (!background.granted) {
+    if (!requestIfMissing) throw new Error('Background location access is required to keep counting when your phone is locked.');
     await explainBackgroundPermission();
-    background = await Location.requestBackgroundPermissionsAsync();
+    const nextBackground = await Location.requestBackgroundPermissionsAsync();
+    if (!nextBackground.granted) throw new Error('Background location access was denied.');
   }
-  if (!background.granted) throw new Error('Allow location all the time in Android settings, then tap Resume.');
-  
-  if (request && Number(Platform.Version) >= 33) {
-    await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+
+  if (Platform.Version >= 33) {
+    const postNotificationsGranted = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+    if (!postNotificationsGranted) {
+      if (!requestIfMissing) throw new Error('Notification permission is required to keep the foreground service running.');
+      const status = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+      if (status !== PermissionsAndroid.RESULTS.GRANTED) throw new Error('Notification permission was denied.');
+    }
   }
-  if (request && AppState.currentState !== 'active') {
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => { subscription.remove(); reject(new Error('Return to Trekipelago and tap Resume.')); }, 30_000);
+
+  if (Platform.Version >= 29) {
+    const activityGranted = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION);
+    if (!activityGranted && requestIfMissing) {
+      await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACTIVITY_RECOGNITION);
+    }
+  }
+
+  if (AppState.currentState !== 'active') {
+    await new Promise<void>(resolve => {
+      const timeout = setTimeout(resolve, 1000);
       const subscription = AppState.addEventListener('change', state => {
-        if (state === 'active') { clearTimeout(timeout); subscription.remove(); resolve(); }
+        if (state === 'active') {
+          clearTimeout(timeout);
+          subscription.remove();
+          resolve();
+        }
       });
     });
   }
 }
 
-async function startNativeTracking() {
-  await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-    accuracy: Location.Accuracy.High,
-    timeInterval: 5_000,
-    distanceInterval: 0,
-    deferredUpdatesDistance: 0,
-    deferredUpdatesInterval: 0,
-    pausesUpdatesAutomatically: false,
-    foregroundService: {
-      notificationTitle: 'Trekipelago · Solo tracking',
-      notificationBody: 'Your distance is counting. Open Trekipelago to pause.',
-      notificationColor: '#70F40B',
-      killServiceOnDestroy: false,
-    },
-  });
+export function buildCollectorRateDescription(level: number): string {
+  switch (level) {
+    case 1:
+      return 'Collector (Lv. 1): 1 orb every 30s';
+    case 2:
+      return 'Collector (Lv. 2): up to 2 orbs every 20s';
+    case 3:
+      return 'Collector (Lv. 3): up to 3 orbs every 10s';
+    default:
+      return 'Collector: Inactive';
+  }
+}
+
+export function buildNotificationBody(save?: SoloSnapshot | null): string {
+  const isUnlocked = save?.backgroundUnlocked ?? false;
+  const level = save?.backgroundCollectorLevel ?? 0;
+  const collectorRate = buildCollectorRateDescription(level);
+  const distanceStr = Math.round(save?.distanceMeters ?? 0);
+
+  if (isUnlocked) {
+    return `${collectorRate} · Distance counting (${distanceStr}m)`;
+  }
+  return `Background tracking locked · ${collectorRate}`;
+}
+
+export async function startNativeTracking(save?: SoloSnapshot | null) {
+  if (AppState.currentState !== 'active') {
+    // Cannot start or modify Android Foreground Service when application is in the background
+    return;
+  }
+  const isUnlocked = save?.backgroundUnlocked ?? false;
+  const body = buildNotificationBody(save);
+
+  try {
+    await Location.startLocationUpdatesAsync(LOCATION_TASK, {
+      accuracy: Location.Accuracy.High,
+      timeInterval: 5_000,
+      distanceInterval: 0,
+      deferredUpdatesDistance: 0,
+      deferredUpdatesInterval: 0,
+      pausesUpdatesAutomatically: false,
+      foregroundService: {
+        notificationTitle: isUnlocked ? 'Trekipelago · Solo tracking' : 'Background tracking locked',
+        notificationBody: body,
+        notificationColor: isUnlocked ? '#70F40B' : '#E50914',
+        killServiceOnDestroy: false,
+      },
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes('Foreground service cannot be started') || AppState.currentState !== 'active') {
+      return;
+    }
+    throw error;
+  }
+}
+
+export async function updateTrackingNotification(save?: SoloSnapshot | null) {
+  if (AppState.currentState !== 'active') return;
+  try {
+    const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
+    if (isRunning) {
+      await startNativeTracking(save);
+    }
+  } catch {
+    // Suppress background transition errors
+  }
 }
 
 export function createSoloGame(config: SoloConfig) {
@@ -138,24 +284,27 @@ export function createSoloGame(config: SoloConfig) {
       throw new GameActionError(error instanceof Error ? error.message : String(error));
     }
 
+    const id = sessionId();
+    const newSave = createSave(config, id, Date.now());
+
     const isAlreadyRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
     if (!isAlreadyRunning) {
       try {
-        await startNativeTracking();
+        await startNativeTracking(newSave);
       } catch (error) {
         throw error; 
       }
+    } else {
+      await updateTrackingNotification(newSave);
     }
 
-    const id = sessionId();
-    await repository.update(() => createSave(config, id, Date.now()));
-    clearTrackingError();
-    // Instantly poke the GPS so the new game doesn't sit on a "Waiting..." screen
-    wakeGps();
+    await repository.update(() => newSave);
+    void startForegroundWatcher();
+    return true;
   });
 }
 
-export function resumeSoloTracking(requestPermissions = true) {
+export function resumeSoloTracking(requestPermissions: boolean) {
   return command(async () => {
     const current = (await repository.read()).save;
     if (!current) return;
@@ -168,7 +317,7 @@ export function resumeSoloTracking(requestPermissions = true) {
     const isRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
     if (!isRunning) {
       try { 
-        await startNativeTracking(); 
+        await startNativeTracking(current); 
         clearTrackingError(); 
       }
       catch (error) { 
@@ -176,11 +325,13 @@ export function resumeSoloTracking(requestPermissions = true) {
         throw error; 
       }
     } else {
+      await updateTrackingNotification(current);
       clearTrackingError();
     }
     
     const id = sessionId();
     await repository.update(save => save ? setTracking(save, true, id, Date.now()) : save);
+    void startForegroundWatcher();
     // Ping the sensor to wake it up in case it was asleep
     wakeGps();
   });
@@ -190,14 +341,27 @@ export function pauseSoloTracking() {
   return command(async () => {
     try {
       await repository.update(save => save ? setTracking(save, false, sessionId(), Date.now()) : save);
-    } finally { await stopNativeTracking(); }
+    } finally { 
+      stopForegroundWatcher();
+      await stopNativeTracking(); 
+    }
     clearTrackingError();
   });
 }
 
+/** Checks location permission during active foreground usage without failing due to background state. */
 export async function checkTrackingPermissions() {
   if (AppState.currentState !== 'active') return;
   const current = (await repository.read()).save;
   if (!current?.tracking) return;
-  await ensurePermissions(false);
+  try {
+    const foreground = await Location.getForegroundPermissionsAsync();
+    if (!foreground.granted) {
+      reportTrackingError(new Error('Location access is required to track your movement.'));
+      return;
+    }
+    clearTrackingError();
+  } catch (error) {
+    reportTrackingError(error);
+  }
 }

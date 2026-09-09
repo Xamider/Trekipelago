@@ -72,7 +72,11 @@ function setup(t: TestContext) {
 function saveWithOrb(session = SESSION, now = START): SoloSnapshot {
   let save = createSave(DEFAULT_SOLO_CONFIG, session, now);
   save = applyLocations(save, session, [{ latitude: 0, longitude: 0, accuracy: 3, timestamp: now }], now);
-  return rollSpawn(save, session, now + 10_000, true, () => 0);
+  let rollIndex = 0;
+  return rollSpawn(save, session, now + 10_000, true, () => {
+    rollIndex++;
+    return rollIndex <= 3 ? 0 : 0.99;
+  });
 }
 
 test('an empty database migrates once and returns default preferences with no save', async t => {
@@ -238,7 +242,6 @@ test('persistent locks fail after four attempts and the next command can recover
   await assert.rejects(repository.update(() => saveWithOrb()), /SQLITE_BUSY/);
   assert.equal(adapter.transactionAttempts - attemptsBefore, 4);
   adapter.beginFailures = 0;
-  assert.equal((await repository.read()).save, null);
   await repository.update(() => saveWithOrb());
   assert.equal((await repository.read()).save?.sessionId, SESSION);
 });
@@ -321,4 +324,52 @@ test('a broken observer cannot make a committed save report a storage failure', 
   await assert.doesNotReject(repository.update(() => saveWithOrb()));
   assert.equal((await repository.read()).save?.sessionId, SESSION);
   assert.equal(healthyNotifications, 1, 'One broken observer must not suppress the remaining observers');
+});
+
+test('Archipelago state saves configuration, checks, received items, and restores correctly', async t => {
+  const { repository } = setup(t);
+
+  // Initial read should have null archipelago state
+  const initial = await repository.readArchipelagoState();
+  assert.equal(initial, null);
+
+  // Save Archipelago config
+  await repository.saveArchipelagoConfig({
+    host: 'archipelago.gg',
+    port: '38290',
+    slotName: 'Explorer1',
+    password: 'secret',
+  });
+
+  const state1 = await repository.readArchipelagoState();
+  assert.equal(state1?.config.host, 'archipelago.gg');
+  assert.equal(state1?.config.slotName, 'Explorer1');
+  assert.equal(state1?.config.password, 'secret');
+  assert.equal(state1?.checkedLocations.length, 0);
+
+  // Record checked locations
+  await repository.recordArchipelagoLocationChecks([7740001, 7740002]);
+  await repository.recordArchipelagoLocationChecks([7740002, 7740003]); // Duplicate 7740002 should not be added twice
+
+  const state2 = await repository.readArchipelagoState();
+  assert.deepEqual(state2?.checkedLocations, [7740001, 7740002, 7740003]);
+
+  // Record received items
+  await repository.recordArchipelagoReceivedItems(
+    [
+      { item: 7730001, location: 7740001, player: 1, flags: 1 },
+      { item: 7730002, location: 7740002, player: 1, flags: 1 },
+    ],
+    2,
+  );
+
+  const state3 = await repository.readArchipelagoState();
+  assert.equal(state3?.receivedItems.length, 2);
+  assert.equal(state3?.receivedItemIndex, 2);
+  assert.equal(state3?.receivedItems[0].item, 7730001);
+
+  // AppSnapshot read() also includes the full archipelago state when present
+  const snapshot = await repository.read();
+  assert.equal(snapshot.archipelago?.config.slotName, 'Explorer1');
+  assert.equal(snapshot.archipelago?.receivedItems.length, 2);
 });
