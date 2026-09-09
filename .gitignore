@@ -48,15 +48,15 @@ ios/
 
 # Environment files
 .env
-.env.*
-!.env.example
 
-# IDE / editor files
-.DS_Store
-.vscode/
+# IDE / Editor folders
 .idea/
-.zed/
+.vscode/
 .claude/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
 .history/
 *.swp
 *.swo
@@ -70,5 +70,3 @@ pids
 *.pid.lock
 # EAS / local credentials
 .eas/
-
-.easignore
