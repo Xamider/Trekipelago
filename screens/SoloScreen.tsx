@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
+import Slider from '@react-native-community/slider';
 import { Feather } from '@expo/vector-icons';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 
@@ -19,6 +20,7 @@ function fieldsFor(config: SoloConfig) {
     rewardInterval: String(config.rewardIntervalMeters),
     orbsPerReward: String(config.orbsPerReward),
     maxOrbs: String(config.maxOrbs ?? 50),
+    buffRatio: String(Math.round((config.buffRatio ?? 0.7) * 100)),
   };
 }
 
@@ -33,7 +35,7 @@ export function SoloScreen({ navigation }: NativeStackScreenProps<RootStackParam
 
   const submit = async () => {
     const config: SoloConfig = {
-      radiusMeters: Number(fields.radius),
+      radiusMeters: 100,
       baseChance: Number(fields.chance) / 100,
       maxDistanceMeters: Number(fields.maxDistance) * 1000,
       rewardIntervalMeters: Number(fields.rewardInterval),
@@ -161,11 +163,38 @@ export function SoloScreen({ navigation }: NativeStackScreenProps<RootStackParam
         </View>
         <View style={styles.row}>
           <View style={{ flex: 1 }}>
-            <Field label="Radius (m)" value={fields.radius} onChangeText={radius => setFields({ ...fields, radius })} keyboardType="decimal-pad" hint="Spawn area size." />
+            <Field
+              label="Base chance (%)"
+              value={fields.chance}
+              onChangeText={chance => setFields({ ...fields, chance })}
+              keyboardType="decimal-pad"
+              hint="Starting spawn chance (1 - 100%)."
+            />
           </View>
-          <View style={{ flex: 1 }}>
-            <Field label="Base chance (%)" value={fields.chance} onChangeText={chance => setFields({ ...fields, chance })} keyboardType="decimal-pad" hint="Starting spawn chance." />
+        </View>
+
+        <View style={styles.buffRatioBox}>
+          <View style={styles.buffRatioHeader}>
+            <AppText style={styles.buffRatioLabel}>FILLER ITEMS RATIO</AppText>
+            <AppText style={styles.buffRatioValue}>
+              <AppText style={{ color: '#70F40B', fontFamily: theme.fonts.bold }}>{fields.buffRatio}% Buffs</AppText>
+              {' / '}
+              <AppText style={{ color: '#ef4444', fontFamily: theme.fonts.bold }}>{100 - Number(fields.buffRatio)}% Traps</AppText>
+            </AppText>
           </View>
+          <Slider
+            accessibilityLabel="Filler Items Ratio"
+            accessibilityValue={{ min: 0, max: 100, now: Number(fields.buffRatio) }}
+            minimumValue={0}
+            maximumValue={100}
+            step={5}
+            value={Number(fields.buffRatio)}
+            onValueChange={val => setFields(f => ({ ...f, buffRatio: String(Math.round(val)) }))}
+            minimumTrackTintColor="#70F40B"
+            maximumTrackTintColor="#ef4444"
+            thumbTintColor="#70F40B"
+            style={styles.ratioSlider}
+          />
         </View>
         {validation ? <Notice>{validation}</Notice> : null}
         <AppButton title="Start journey" loading={busy} onPress={() => { void submit(); }} />
@@ -199,4 +228,9 @@ const styles = StyleSheet.create({
   effectItem: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
   effectName: { fontSize: 12, fontFamily: theme.fonts.mono, color: theme.colors.text },
   caption: { color: theme.colors.muted, fontSize: 12 },
+  buffRatioBox: { backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 10, padding: 12, gap: 10 },
+  buffRatioHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  buffRatioLabel: { color: theme.colors.secondary, fontSize: 11, fontFamily: theme.fonts.bold, letterSpacing: 0.5 },
+  buffRatioValue: { fontFamily: theme.fonts.mono, fontSize: 12 },
+  ratioSlider: { width: '100%', height: 40 },
 });

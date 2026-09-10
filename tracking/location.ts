@@ -224,10 +224,25 @@ export function buildNotificationBody(save?: SoloSnapshot | null): string {
   const collectorRate = buildCollectorRateDescription(level);
   const distanceStr = Math.round(save?.distanceMeters ?? 0);
 
-  if (isUnlocked) {
-    return `${collectorRate} · Distance counting (${distanceStr}m)`;
+  const lastEvent = save?.activity
+    ? [...save.activity].reverse().find(a => a.kind === 'event')
+    : undefined;
+
+  let lastItemStr = '';
+  if (lastEvent) {
+    const cleaned = lastEvent.message
+      .replace(/^Item found:\s*/i, '')
+      .replace(/\s*\([^)]*Milestone\)$/i, '')
+      .trim();
+    if (cleaned) {
+      lastItemStr = ` · Last: ${cleaned}`;
+    }
   }
-  return `Background tracking locked · ${collectorRate}`;
+
+  if (isUnlocked) {
+    return `${collectorRate} · Dist: ${distanceStr}m${lastItemStr}`;
+  }
+  return `Background tracking locked · ${collectorRate}${lastItemStr}`;
 }
 
 export async function startNativeTracking(save?: SoloSnapshot | null) {

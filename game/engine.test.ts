@@ -37,8 +37,9 @@ test('default settings and new save have exactly one local journey worth of stat
     rewardIntervalMeters: 500,
     orbsPerReward: 5,
     maxOrbs: 50,
-    spawnReduction: 0.25,
-    recoveryDistanceMeters: 100,
+    spawnReduction: 0.125,
+    recoveryDistanceMeters: 400,
+    buffRatio: 0.7,
   });
   const config = { ...DEFAULT_SOLO_CONFIG };
   const save = createSave(config, SESSION, START);
@@ -53,13 +54,15 @@ test('default settings and new save have exactly one local journey worth of stat
 test('configuration rejects invalid positive distances and fractional probabilities', () => {
   const base = { ...DEFAULT_SOLO_CONFIG };
   assert.equal(validateConfig({ ...base, radiusMeters: 0 }), 'Region radius must be a positive number.');
-  assert.equal(validateConfig({ ...base, baseChance: 0 }), 'Base chance must be greater than 0% and at most 100%.');
-  assert.equal(validateConfig({ ...base, baseChance: 1.5 }), 'Base chance must be greater than 0% and at most 100%.');
+  assert.equal(validateConfig({ ...base, baseChance: 0 }), 'Base chance must be between 1% and 100%.');
+  assert.equal(validateConfig({ ...base, baseChance: 0.005 }), 'Base chance must be between 1% and 100%.');
+  assert.equal(validateConfig({ ...base, baseChance: 1.5 }), 'Base chance must be between 1% and 100%.');
   assert.equal(validateConfig({ ...base, spawnReduction: -0.1 }), 'Spawn reduction must be greater than 0% and at most 100%.');
   assert.equal(validateConfig({ ...base, recoveryDistanceMeters: -1 }), 'Recovery distance must be a positive number.');
   assert.equal(validateConfig({ ...base, maxDistanceMeters: 0 }), 'Max distance must be a positive number.');
   assert.equal(validateConfig({ ...base, rewardIntervalMeters: 0 }), 'Reward interval must be a positive number.');
   assert.equal(validateConfig({ ...base, orbsPerReward: 0 }), 'Orbs per reward must be a positive number.');
+  assert.ok(validateConfig({ ...base, maxDistanceMeters: 1000, rewardIntervalMeters: 1000, maxOrbs: 10, orbsPerReward: 5 })?.includes('Not enough reward milestones'));
   assert.equal(validateConfig(base), null);
 });
 
@@ -164,9 +167,9 @@ test('walking a closed loop counts the entire path and restores chance', () => {
 test('distance recovers linearly and never exceeds the configured base chance', () => {
   let save = freshSave({ ...DEFAULT_SOLO_CONFIG, baseChance: 0.4, recoveryDistanceMeters: 100 });
   save = { ...save, chance: 0.1 };
-  save = applyLocations(save, SESSION, [fix(50, 0, START + 5_000)], START + 5_000);
+  save = applyLocations(save, SESSION, [fix(50, 0, START + 5_000)], START + 5_000, 5);
   near(save.chance, 0.3);
-  save = applyLocations(save, SESSION, [fix(150, 0, START + 10_000)], START + 10_000);
+  save = applyLocations(save, SESSION, [fix(150, 0, START + 15_000)], START + 15_000, 5);
   near(save.chance, 0.4);
 });
 
@@ -262,7 +265,7 @@ test('historical background batches count accepted segments but remain stale for
     fix(25, 0, START + 5_000), fix(50, 0, START + 10_000), fix(75, 0, START + 15_000),
   ], START + 60_000);
   near(save.distanceMeters, 75);
-  near(save.chance, 0.15);
+  near(save.chance, 0.0375);
   assert.equal(isFreshFix(save, START + 60_000), false);
 });
 
@@ -359,11 +362,11 @@ test('progressive speed items increase speedLevel up to max and expand allowed G
   assert.equal(save.speedLevel, 1);
   assert.ok(save.activity.at(-1)?.message.includes('Speed Limit Increased (Level 1'));
 
-  // With speedLevel = 1, SPEED_LEVELS_MPS[1] = 7.5 m/s. A jump of 30m over 5s (6 m/s) is accepted!
+  // With speedLevel = 1, SPEED_LEVELS_MPS[1] = 6.0 / 3.6 = 1.667 m/s. A jump of 6m over 5s (1.2 m/s) is accepted!
   const fix1 = fix(0, 0, START + 20_000);
-  const fix2 = fix(30, 0, START + 25_000); // 6 m/s
+  const fix2 = fix(6, 0, START + 25_000); // 1.2 m/s
   save = engineApplyLocations(save, SESSION, [fix1, fix2], START + 25_000, 0);
-  near(save.distanceMeters, 30);
+  near(save.distanceMeters, 6);
 });
 
 test('WEIGHTED_REGULAR_ITEMS does not contain items affecting orbs directly (trap_orbs, burst_orbs)', () => {
@@ -400,19 +403,19 @@ test('collecting orbsPerReward awards an item milestone from orbItemPool', () =>
 
 test('speed_up temporary buff increases GPS speed limit by 50% in applyLocations', () => {
   let save = freshSave();
-  // Base speed level 0 is 3.5 m/s.
-  // Over 5 seconds, max allowed distance without boost = 3.5 * 5 = 17.5m.
-  // Traveling 20m over 5s (4 m/s) is normally rejected (> 3.5 m/s):
-  const normalSave = engineApplyLocations(save, SESSION, [fix(0, 0, START + 10_000), fix(20, 0, START + 15_000)], START + 15_000, 0);
-  assert.equal(normalSave.distanceMeters, 0, 'Should reject 4 m/s when base limit is 3.5 m/s');
+  // Base speed level 0 is 3.0 / 3.6 ≈ 0.833 m/s.
+  // Over 5 seconds, max allowed distance without boost = 0.833 * 5 ≈ 4.16m.
+  // Traveling 5m over 5s (1.0 m/s) is normally rejected (> 0.833 m/s):
+  const normalSave = engineApplyLocations(save, SESSION, [fix(0, 0, START + 10_000), fix(5, 0, START + 15_000)], START + 15_000, 0);
+  assert.equal(normalSave.distanceMeters, 0, 'Should reject 1.0 m/s when base limit is 0.833 m/s');
 
-  // Now with speed_up active, limit becomes 3.5 * 1.5 = 5.25 m/s. 4 m/s is accepted!
+  // Now with speed_up active, limit becomes 0.833 * 1.5 = 1.25 m/s. 1.0 m/s (5m in 5s) is accepted!
   const boostedSave = {
     ...save,
     effects: [{ id: 'boost-1', type: 'speed_up' as const, expiresAt: START + 60_000 }],
   };
-  const result = engineApplyLocations(boostedSave, SESSION, [fix(0, 0, START + 10_000), fix(20, 0, START + 15_000)], START + 15_000, 0);
-  near(result.distanceMeters, 20);
+  const result = engineApplyLocations(boostedSave, SESSION, [fix(0, 0, START + 10_000), fix(5, 0, START + 15_000)], START + 15_000, 0);
+  near(result.distanceMeters, 5);
 });
 
 test('getEffectDetails returns clear descriptive info for all active effects and perks', () => {

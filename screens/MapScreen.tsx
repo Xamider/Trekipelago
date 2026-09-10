@@ -22,7 +22,7 @@ function effectConfig(type: ItemType, expiresAt?: number) {
 
   switch (type) {
     case 'boost_drop_2x':
-      return { label: `2X ORBS${timeStr}`, color: '#facc15', bg: 'rgba(250, 204, 21, 0.16)', border: '#ca8a04', icon: 'zap' as const };
+      return { label: `2X ORBS${timeStr}`, color: '#70F40B', bg: 'rgba(112, 244, 11, 0.16)', border: '#16a34a', icon: 'zap' as const };
     case 'trap_drop_half':
     case 'trap_orbs':
       return { label: `0.5X ORBS${timeStr}`, color: '#ef4444', bg: 'rgba(239, 68, 68, 0.16)', border: '#dc2626', icon: 'zap-off' as const };
@@ -35,6 +35,10 @@ function effectConfig(type: ItemType, expiresAt?: number) {
       return { label: `+50% SPEED${timeStr}`, color: '#4ade80', bg: 'rgba(74, 222, 128, 0.16)', border: '#16a34a', icon: 'activity' as const };
     case 'trap_slow':
       return { label: `-50% SPEED${timeStr}`, color: '#ef4444', bg: 'rgba(239, 68, 68, 0.16)', border: '#dc2626', icon: 'activity' as const };
+    case 'boost_collect_2x':
+      return { label: `2X COLLECT${timeStr}`, color: '#c084fc', bg: 'rgba(192, 132, 252, 0.16)', border: '#9333ea', icon: 'plus-circle' as const };
+    case 'trap_collect_half':
+      return { label: `0.5X COLLECT${timeStr}`, color: '#ef4444', bg: 'rgba(239, 68, 68, 0.16)', border: '#dc2626', icon: 'minus-circle' as const };
     case 'trap_blind':
       return { label: `BLINDED${timeStr}`, color: '#f87171', bg: 'rgba(248, 113, 113, 0.16)', border: '#dc2626', icon: 'eye-off' as const };
     default:
@@ -63,7 +67,8 @@ export function MapScreen() {
 
   if (Platform.OS !== 'android') return <UnsupportedPlatform />;
 
-  const progress = save ? Math.min(1, Math.max(0, save.distanceMeters / (save.config.maxDistanceMeters || 1))) : 0;
+  const maxDistanceGoal = save?.config?.maxDistanceMeters || 5000;
+  const progress = save ? Math.min(1, Math.max(0, save.distanceMeters / maxDistanceGoal)) : 0;
   const isBlinded = Boolean(save?.effects?.some(e => e.type === 'trap_blind'));
   const canCollect = Boolean(save?.tracking && freshFix && !busy && !error);
   const mapHint = !save ? 'Create a Solo expedition to explore.'
@@ -74,7 +79,7 @@ export function MapScreen() {
   const hasDropBoost = Boolean(save?.effects?.some(e => e.type === 'boost_drop_2x'));
   const hasDropDebuff = Boolean(save?.effects?.some(e => e.type === 'trap_drop_half' || e.type === 'trap_orbs'));
   const effectiveChance = save ? Math.min(1.0, save.chance * (hasDropBoost ? 2 : hasDropDebuff ? 0.5 : 1)) : 0;
-  const chanceColor = hasDropBoost ? '#facc15' : hasDropDebuff ? '#ef4444' : '#70F40B';
+  const chanceColor = hasDropBoost ? '#70F40B' : hasDropDebuff ? '#ef4444' : theme.colors.text;
 
   const hasSpeedBoost = Boolean(save?.effects?.some(e => e.type === 'speed_up'));
   const hasSpeedDebuff = Boolean(save?.effects?.some(e => e.type === 'trap_slow'));
@@ -90,15 +95,23 @@ export function MapScreen() {
   const hasDistDebuff = Boolean(save?.effects?.some(e => e.type === 'trap_distance_half' || e.type === 'trap_distance'));
   const distColor = hasDistBoost ? '#38bdf8' : hasDistDebuff ? '#ef4444' : '#ffffff';
 
+  const hasCollectBoost = Boolean(save?.effects?.some(e => e.type === 'boost_collect_2x'));
+  const hasCollectDebuff = Boolean(save?.effects?.some(e => e.type === 'trap_collect_half'));
+  const collectColor = hasCollectBoost ? '#c084fc' : hasCollectDebuff ? '#ef4444' : '#ffffff';
+
   const totalSegments = save ? Math.max(1, Math.floor((save.config.maxDistanceMeters || 1) / (save.config.rewardIntervalMeters || 1))) : 1;
   const currentInterval = save?.config?.rewardIntervalMeters || 1;
   const nextMilestoneMeters = save ? (Math.floor(save.distanceMeters / currentInterval) + 1) * currentInterval : 0;
   const metersToNextReward = save ? Math.max(0, nextMilestoneMeters - save.distanceMeters) : 0;
 
+  const maxOrbsGoal = save?.config?.maxOrbs ?? 50;
   const orbsInterval = save?.config?.orbsPerReward || 5;
   const collected = save?.collectedCount || 0;
   const nextOrbMilestone = (Math.floor(collected / orbsInterval) + 1) * orbsInterval;
   const orbsToNextReward = Math.max(0, nextOrbMilestone - collected);
+
+  const isDistMax = Boolean(save && (save.distanceMeters >= maxDistanceGoal || ((save.distanceItemPool?.length ?? 0) > 0 && (save.distanceItemsClaimed ?? 0) >= (save.distanceItemPool?.length ?? 0))));
+  const isOrbsMax = Boolean(save && (save.collectedCount >= maxOrbsGoal || ((save.orbItemPool?.length ?? 0) > 0 && (save.orbItemsClaimed ?? 0) >= (save.orbItemPool?.length ?? 0))));
 
   return (
     <View style={styles.container}>
@@ -231,11 +244,14 @@ export function MapScreen() {
               </AppText>
             </View>
             <View style={[styles.statCol, { alignItems: 'flex-end' }]}>
+              <AppText style={styles.statLabel}>COLLECTED</AppText>
               <View style={styles.collectedOrbRow}>
                 <View style={styles.smallOrbDot} />
-                <AppText style={styles.statValue}>{save ? save.collectedCount : 0}</AppText>
+                <AppText style={[styles.statValue, { color: collectColor }]}>
+                  {Math.floor(collected)}/{maxOrbsGoal}
+                  {hasCollectDebuff ? ' (0.5x)' : hasCollectBoost ? ' (2x)' : ''}
+                </AppText>
               </View>
-              <AppText style={styles.statLabel}>Collected</AppText>
             </View>
           </View>
 
@@ -280,21 +296,33 @@ export function MapScreen() {
 
           {/* Next Reward Notices */}
           <View pointerEvents="none" style={styles.rewardsRow}>
-            <AppText style={styles.rewardGrayText}>
-              Next dist. reward:{' '}
+            {isDistMax ? (
               <AppText style={styles.rewardGreenText}>
-                {formatDistance(nextMilestoneMeters, preferences.distanceUnit)}
-              </AppText>{' '}
-              <AppText style={styles.rewardGrayText}>
-                ({formatDistance(metersToNextReward, preferences.distanceUnit)})
+                Distance goal reached (MAX)
               </AppText>
-            </AppText>
+            ) : (
+              <AppText style={styles.rewardGrayText}>
+                Next dist. reward:{' '}
+                <AppText style={styles.rewardGreenText}>
+                  {formatDistance(nextMilestoneMeters, preferences.distanceUnit)}
+                </AppText>{' '}
+                <AppText style={styles.rewardGrayText}>
+                  ({formatDistance(metersToNextReward, preferences.distanceUnit)})
+                </AppText>
+              </AppText>
+            )}
 
-            <AppText style={styles.rewardGrayText}>
-              Next orb reward:{' '}
-              <AppText style={styles.rewardPurpleText}>{nextOrbMilestone} orbs</AppText>{' '}
-              <AppText style={styles.rewardGrayText}>({orbsToNextReward} orbs)</AppText>
-            </AppText>
+            {isOrbsMax ? (
+              <AppText style={styles.rewardPurpleText}>
+                Orb goal reached (MAX)
+              </AppText>
+            ) : (
+              <AppText style={styles.rewardGrayText}>
+                Next orb reward:{' '}
+                <AppText style={styles.rewardPurpleText}>{nextOrbMilestone} orbs</AppText>{' '}
+                <AppText style={styles.rewardGrayText}>({orbsToNextReward} orbs)</AppText>
+              </AppText>
+            )}
           </View>
         </LinearGradient>
 

@@ -28,7 +28,7 @@ export function EffectTooltip({ effectType, level = 0, expiresAt, onClose }: Eff
     ? '#ef4444'
     : isPermanent
       ? (effectType === 'unlock_background' ? '#34d399' : effectType === 'passive_collector' ? '#c084fc' : '#38bdf8')
-      : '#70F40B';
+      : (effectType === 'boost_collect_2x' ? '#c084fc' : '#70F40B');
 
   const getIconName = (): keyof typeof Feather.glyphMap => {
     if (isTrap) {
@@ -36,6 +36,7 @@ export function EffectTooltip({ effectType, level = 0, expiresAt, onClose }: Eff
       if (effectType === 'trap_slow') return 'activity';
       if (effectType === 'trap_distance_half' || effectType === 'trap_distance') return 'trending-down';
       if (effectType === 'trap_drop_half' || effectType === 'trap_orbs') return 'zap-off';
+      if (effectType === 'trap_collect_half') return 'minus-circle';
       return 'alert-triangle';
     }
     if (effectType === 'unlock_background') return 'check-circle';
@@ -44,6 +45,7 @@ export function EffectTooltip({ effectType, level = 0, expiresAt, onClose }: Eff
     if (effectType === 'speed_up') return 'activity';
     if (effectType === 'boost_distance_2x') return 'trending-up';
     if (effectType === 'boost_drop_2x') return 'zap';
+    if (effectType === 'boost_collect_2x') return 'plus-circle';
     return 'info';
   };
 

@@ -1,3 +1,4 @@
+import { DEFAULT_SOLO_CONFIG } from '../game/engine';
 import type { ActivityEntry, Orb, SoloSnapshot } from '../game/types';
 import { DEFAULT_PREFERENCES, validatePreferences, type AppPreferences } from '../state/preferences';
 import type { SqlConnection, SqlDatabase } from './driver';
@@ -113,6 +114,14 @@ export function createRepository(open: () => Promise<SqlDatabase>) {
     const row = await tx.getFirstAsync<{ payload: string }>('SELECT payload FROM solo_save WHERE id = 1');
     if (!row) return null;
     const saved = JSON.parse(row.payload) as StoredSave;
+    if (saved.config) {
+      if (saved.config.spawnReduction === 0.25) {
+        saved.config.spawnReduction = DEFAULT_SOLO_CONFIG.spawnReduction;
+      }
+      if (saved.config.recoveryDistanceMeters === 100) {
+        saved.config.recoveryDistanceMeters = DEFAULT_SOLO_CONFIG.recoveryDistanceMeters;
+      }
+    }
     const orbs = await tx.getAllAsync<{ payload: string }>('SELECT payload FROM orbs ORDER BY rowid');
     const activity = await tx.getAllAsync<{ payload: string }>('SELECT payload FROM activity ORDER BY position');
     return { ...saved, orbs: orbs.map(row => JSON.parse(row.payload) as Orb), activity: activity.map(row => JSON.parse(row.payload) as ActivityEntry) };

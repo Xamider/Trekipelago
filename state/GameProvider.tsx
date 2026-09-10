@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type PropsWithChildren } from 'react';
-import { Alert, AppState } from 'react-native';
+import { Alert, AppState, Vibration } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { clearAllEffects, collectOrb as collect, injectTestEffects, resetSpawnClock, rollSpawn } from '../game/engine';
 import type { SoloConfig, SoloSnapshot } from '../game/types';
 import { repository } from '../storage/database';
@@ -7,6 +8,84 @@ import { clearTrackingError, getTrackingError, subscribeTrackingErrors } from '.
 import { ForegroundClock } from '../tracking/foregroundClock';
 import { checkTrackingPermissions, createSoloGame, GameActionError, haltAfterFailure, pauseSoloTracking, resumeSoloTracking, startForegroundWatcher, stopForegroundWatcher, stopNativeTracking, updateTrackingNotification, wakeGps } from '../tracking/location';
 import { DEFAULT_PREFERENCES, type AppPreferences } from './preferences';
+
+export interface RewardNotice {
+  id: string;
+  text: string;
+  color: string;
+  bg: string;
+  border: string;
+  icon: keyof typeof Feather.glyphMap;
+}
+
+export function getEventVisuals(message: string) {
+  const isTrap = /trap|slow|blind|half/i.test(message);
+  if (isTrap) {
+    if (/blind/i.test(message)) {
+      return { color: '#f87171', bg: 'rgba(248, 113, 113, 0.22)', border: '#dc2626', icon: 'eye-off' as const };
+    }
+    if (/slow/i.test(message)) {
+      return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'activity' as const };
+    }
+    if (/distance/i.test(message)) {
+      return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'trending-down' as const };
+    }
+    if (/drop|orbs/i.test(message)) {
+      return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'zap-off' as const };
+    }
+    if (/collect/i.test(message)) {
+      return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'minus-circle' as const };
+    }
+    return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'alert-triangle' as const };
+  }
+
+  if (/speed boost|\+50% speed/i.test(message)) {
+    return { color: '#4ade80', bg: 'rgba(74, 222, 128, 0.22)', border: '#16a34a', icon: 'activity' as const };
+  }
+  if (/distance bonus|double distance|2x distance/i.test(message)) {
+    return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.22)', border: '#0284c7', icon: 'trending-up' as const };
+  }
+  if (/orb drop|2x orbs|orb energy|double orb/i.test(message)) {
+    return { color: '#70F40B', bg: 'rgba(112, 244, 11, 0.22)', border: '#16a34a', icon: 'zap' as const };
+  }
+  if (/collect.*2x|double collect|2x collect/i.test(message)) {
+    return { color: '#c084fc', bg: 'rgba(192, 132, 252, 0.22)', border: '#9333ea', icon: 'plus-circle' as const };
+  }
+  if (/collector/i.test(message)) {
+    return { color: '#c084fc', bg: 'rgba(192, 132, 252, 0.22)', border: '#9333ea', icon: 'cpu' as const };
+  }
+  if (/background/i.test(message)) {
+    return { color: '#34d399', bg: 'rgba(52, 211, 153, 0.22)', border: '#059669', icon: 'check-circle' as const };
+  }
+  if (/speed limit/i.test(message)) {
+    return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.22)', border: '#0284c7', icon: 'trending-up' as const };
+  }
+
+  return { color: '#70F40B', bg: 'rgba(112, 244, 11, 0.22)', border: '#16a34a', icon: 'award' as const };
+}
+
+export function getEventShortText(message: string): string {
+  let cleaned = message
+    .replace(/^Item found:\s*/i, '')
+    .replace(/\s*\([^)]*Milestone\)$/i, '')
+    .trim();
+
+  cleaned = cleaned
+    .replace(/^(Double Distance \(2x\)|2X DISTANCE)/i, '2x Distance')
+    .replace(/^(Double Orb Spawn Chance \(2x\)|2X ORBS)/i, '2x Orbs')
+    .replace(/^(Double Collected Orbs \(2x\)|2X COLLECT)/i, '2x Collect')
+    .replace(/^(Speed Boost \(\+50% speed limit\)|\+50% SPEED)/i, '+50% Speed')
+    .replace(/^(Slow Movement \(Trap\)|-50% SPEED)/i, 'Slow (-50%)')
+    .replace(/^(Half Distance \(Trap\)|0\.5X DISTANCE)/i, '0.5x Distance')
+    .replace(/^(Half Orb Spawn Chance \(Trap\)|0\.5X ORBS)/i, '0.5x Orbs')
+    .replace(/^(Half Collected Orbs \(Trap\)|0\.5X COLLECT)/i, '0.5x Collect')
+    .replace(/^(Map Blindness \(Trap\)|MAP BLINDED)/i, 'Map Blinded')
+    .replace(/^Passive Background Orb Collector/i, 'Collector')
+    .replace(/^Max Speed Limit Increased/i, 'Max Speed')
+    .replace(/^Background Tracking Unlocked!/i, 'BG Tracking');
+
+  return cleaned;
+}
 
 export function computeTrackingStatus(save: SoloSnapshot | null, loading: boolean, error: string | null, now: number): string {
   if (loading) return 'Loading your journey...';
@@ -31,6 +110,8 @@ interface GameContextValue {
   busy: boolean;
   error: string | null;
   status: string | null;
+  rewardNotice: RewardNotice | null;
+  dismissRewardNotice(): void;
   createGame(config: SoloConfig): Promise<boolean>;
   resume(): Promise<boolean>;
   pause(): Promise<void>;
@@ -49,10 +130,52 @@ export function GameProvider({ children }: PropsWithChildren) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rewardNotice, setRewardNotice] = useState<RewardNotice | null>(null);
   const [clock] = useState(() => new ForegroundClock());
   const busyRef = useRef(false);
   const mounted = useRef(true);
   const saveRef = useRef<SoloSnapshot | null>(null);
+  const prevClaimedRef = useRef<number | null>(null);
+  const lastSeenEventIdRef = useRef<string | null>(null);
+  const rewardTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const triggerRewardFeedback = useCallback((currentSave: SoloSnapshot, prefs: AppPreferences) => {
+    const currentClaimed = (currentSave.distanceItemsClaimed || 0) + (currentSave.orbItemsClaimed || 0);
+    const latestEvent = currentSave.activity
+      ? [...currentSave.activity].reverse().find(a => a.kind === 'event')
+      : undefined;
+
+    if (prevClaimedRef.current === null) {
+      prevClaimedRef.current = currentClaimed;
+      lastSeenEventIdRef.current = latestEvent?.id ?? null;
+      return;
+    }
+
+    const hasNewItem = currentClaimed > prevClaimedRef.current || (Boolean(latestEvent) && latestEvent?.id !== lastSeenEventIdRef.current);
+    prevClaimedRef.current = currentClaimed;
+    if (latestEvent) {
+      lastSeenEventIdRef.current = latestEvent.id;
+    }
+
+    if (hasNewItem && latestEvent) {
+      const visuals = getEventVisuals(latestEvent.message);
+      const text = getEventShortText(latestEvent.message);
+      setRewardNotice({ id: latestEvent.id, text, ...visuals });
+
+      if (prefs.vibrateOnReward) {
+        try {
+          Vibration.vibrate([0, 200, 100, 300]);
+        } catch {
+          // Ignore
+        }
+      }
+
+      if (rewardTimerRef.current) clearTimeout(rewardTimerRef.current);
+      rewardTimerRef.current = setTimeout(() => {
+        setRewardNotice(null);
+      }, 8000);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     const snapshot = await repository.read();
@@ -60,12 +183,15 @@ export function GameProvider({ children }: PropsWithChildren) {
       saveRef.current = snapshot.save;
       setSave(snapshot.save);
       setPrefs(snapshot.preferences);
-      if (snapshot.save && AppState.currentState === 'active') {
-        void updateTrackingNotification(snapshot.save).catch(() => {});
+      if (snapshot.save) {
+        triggerRewardFeedback(snapshot.save, snapshot.preferences);
+        if (AppState.currentState === 'active') {
+          void updateTrackingNotification(snapshot.save).catch(() => {});
+        }
       }
     }
     return snapshot;
-  }, []);
+  }, [triggerRewardFeedback]);
 
   const fail = useCallback(async (reason: unknown) => {
     clock.setVisible(false);
@@ -156,8 +282,6 @@ export function GameProvider({ children }: PropsWithChildren) {
                 ? rollSpawn(current, id, rightNow, clock.permits(epoch) && !getTrackingError(), Math.random) : current);
             }
 
-            // GPS watchdog: if no accurate fix arrived within 8 seconds on the active map screen,
-            // immediately trigger wakeGps to poll the GPS hardware and ensure the foreground watcher is running.
             const fixAgeMs = currentSave.lastFix ? rightNow - currentSave.lastFix.timestamp : Infinity;
             if (fixAgeMs > 8_000) {
               wakeGps();
@@ -166,7 +290,6 @@ export function GameProvider({ children }: PropsWithChildren) {
           }
           
           ticks++;
-          // Periodically check permissions every 10 seconds while active
           if (ticks % 10 === 0 && AppState.currentState === 'active') {
             await checkTrackingPermissions();
           }
@@ -181,6 +304,7 @@ export function GameProvider({ children }: PropsWithChildren) {
       clock.setVisible(false);
       stopForegroundWatcher();
       clearInterval(timer);
+      if (rewardTimerRef.current) clearTimeout(rewardTimerRef.current);
       stateSubscription.remove(); blurSubscription.remove(); focusSubscription.remove();
       unsubscribe(); unsubscribeErrors();
     };
@@ -220,6 +344,8 @@ export function GameProvider({ children }: PropsWithChildren) {
 
   const context: GameContextValue = {
     save, preferences, loading, busy, error, status,
+    rewardNotice,
+    dismissRewardNotice: () => setRewardNotice(null),
     createGame: async config => {
       return action(async () => {
         await createSoloGame(config);

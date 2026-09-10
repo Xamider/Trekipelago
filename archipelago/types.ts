@@ -4,6 +4,7 @@
 
 // Unique Base ID for Trekipelago items and locations in the Archipelago ecosystem
 export const TREKIPELAGO_BASE_ITEM_ID = 7730000;
+export const TREKIPELAGO_BASE_LOCATION_ID = 7730000;
 export const TREKIPELAGO_BASE_DISTANCE_LOC_ID = 7740000;
 export const TREKIPELAGO_BASE_ORB_LOC_ID = 7750000;
 
@@ -66,9 +67,21 @@ export const TREKIPELAGO_ITEM_TABLE: Record<string, ArchipelagoItemDefinition> =
   },
   trap_distance: {
     code: TREKIPELAGO_BASE_ITEM_ID + 8,
-    name: 'Lost Distance Trap (-500m)',
+    name: 'Half Distance Trap (0.5x)',
     classification: ItemClassification.Trap,
     gameType: 'trap_distance',
+  },
+  boost_collect_2x: {
+    code: TREKIPELAGO_BASE_ITEM_ID + 9,
+    name: 'Double Collected Orbs (2x)',
+    classification: ItemClassification.Useful,
+    gameType: 'boost_collect_2x',
+  },
+  trap_collect_half: {
+    code: TREKIPELAGO_BASE_ITEM_ID + 10,
+    name: 'Half Collected Orbs Trap (0.5x)',
+    classification: ItemClassification.Trap,
+    gameType: 'trap_collect_half',
   },
 };
 

@@ -8,6 +8,7 @@ export interface SoloConfig {
   maxOrbs: number; // added maxOrbs
   spawnReduction: number;
   recoveryDistanceMeters: number; // e.g. 5 orbs gives a reward
+  buffRatio?: number; // 0.0 to 1.0 (default 0.7 = 70% buffs, 30% debuffs)
 }
 
 export interface LocationSample {
@@ -28,6 +29,7 @@ export type ItemType =
   | 'boost_drop_2x' 
   | 'boost_distance_2x' 
   | 'speed_up' 
+  | 'boost_collect_2x'
   | 'burst_orbs' 
   | 'unlock_background'
   | 'trap_distance'
@@ -35,6 +37,7 @@ export type ItemType =
   | 'trap_orbs'
   | 'trap_drop_half'
   | 'trap_slow'
+  | 'trap_collect_half'
   | 'trap_blind'
   | 'passive_collector'
   | 'progressive_speed';
