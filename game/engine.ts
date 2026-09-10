@@ -316,10 +316,16 @@ export function validateConfig(config: SoloConfig): string | null {
   return null;
 }
 
-export function addActivity(save: SoloSnapshot, kind: ActivityEntry['kind'], message: string, now: number): SoloSnapshot {
+export function addActivity(save: SoloSnapshot, kind: ActivityEntry['kind'], message: string, now: number, item?: EventItem): SoloSnapshot {
   const lastId = save.activity[save.activity.length - 1]?.id;
   const sequence = (Number(lastId?.split(':').pop()) || 0) + 1;
-  const entry: ActivityEntry = { id: `${save.sessionId}:${now}:${sequence}`, kind, timestamp: now, message };
+  const entry: ActivityEntry = {
+    id: `${save.sessionId}:${now}:${sequence}`,
+    kind,
+    timestamp: now,
+    message,
+    ...(item ? { item } : {}),
+  };
   return { ...save, activity: [...save.activity, entry].slice(-100) };
 }
 
@@ -587,7 +593,7 @@ export function rollEvent(save: SoloSnapshot, now: number, source: 'distance' | 
   }
 
   const reasonDesc = source === 'distance' ? 'Distance Milestone' : 'Orb Milestone';
-  return addActivity(next, 'event', message + ` (${reasonDesc})`, now);
+  return addActivity(next, 'event', message + ` (${reasonDesc})`, now, eventItem);
 }
 
 export function cleanupEffects(save: SoloSnapshot, now: number): SoloSnapshot {

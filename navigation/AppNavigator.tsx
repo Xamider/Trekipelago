@@ -30,7 +30,8 @@ const Tabs = createBottomTabNavigator<ExpeditionTabParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 function TrackingStrip() {
-  const { save, busy, error, status, pause, resume, retry, now, rewardNotice } = useGameStatus();
+  const { save, busy, error, status, pause, resume, retry, now, rewardNotice, dismissRewardNotice } = useGameStatus();
+  const [rowWidth, setRowWidth] = useState(0);
   
   const missingGpsDurationMs = save?.lastFix ? Math.max(0, now - save.lastFix.timestamp) : 0;
   const isGpsDelaying = save?.tracking && missingGpsDurationMs > 60000;
@@ -45,25 +46,32 @@ function TrackingStrip() {
 
   return <View style={styles.trackingPanel}>
     {error && <AppText accessibilityLiveRegion="polite" style={styles.error}>{error}</AppText>}
-    <View style={styles.trackingRow}>
+
+    {rewardNotice && (
+      <Pressable
+        onPress={dismissRewardNotice}
+        accessibilityRole="button"
+        accessibilityLabel={`Reward: ${rewardNotice.text}. Tap to dismiss`}
+        style={rowWidth >= 440 ? styles.centerBadgeWrapper : styles.aboveBadgeWrapper}
+        pointerEvents="box-none">
+        <View style={[styles.eventBadge, { backgroundColor: rewardNotice.bg, borderColor: rewardNotice.border }]}>
+          <Feather name={rewardNotice.icon} size={11} color={rewardNotice.color} />
+          <AppText numberOfLines={1} style={[styles.eventText, { color: rewardNotice.color }]}>
+            {rewardNotice.text}
+          </AppText>
+        </View>
+      </Pressable>
+    )}
+
+    <View style={styles.trackingRow} onLayout={e => setRowWidth(e.nativeEvent.layout.width)}>
       {save && <Pressable accessibilityRole="button" accessibilityLabel="Open Solo map" style={styles.trackingInfo} onPress={() => { if (navigationRef.isReady()) navigationRef.navigate('Expedition', { screen: 'Map' }); }}>
         <View style={[styles.statusDot, !save.tracking && { backgroundColor: theme.colors.subtle }]} />
         <View style={styles.statusText}>
-          <AppText style={styles.statusLabel}>SOLO {save.tracking ? 'TRACKING' : 'PAUSED'}</AppText>
+          <AppText numberOfLines={1} style={styles.statusLabel}>SOLO {save.tracking ? 'TRACKING' : 'PAUSED'}</AppText>
           <AppText numberOfLines={1} style={[styles.statusDescription, isGpsDelaying && { color: warningColor }]}>{status}</AppText>
         </View>
       </Pressable>}
 
-      {rewardNotice && (
-        <View style={styles.centerBadgeWrapper} pointerEvents="box-none">
-          <View style={[styles.eventBadge, { backgroundColor: rewardNotice.bg, borderColor: rewardNotice.border }]}>
-            <Feather name={rewardNotice.icon} size={13} color={rewardNotice.color} />
-            <AppText numberOfLines={1} style={[styles.eventText, { color: rewardNotice.color }]}>
-              {rewardNotice.text}
-            </AppText>
-          </View>
-        </View>
-      )}
       {error ? <>
         {save?.tracking && <Pressable accessibilityRole="button" accessibilityLabel="Pause Solo tracking" disabled={busy} onPress={() => { void pause(); }} style={styles.trackingButton}><AppText style={styles.trackingButtonText}>Pause</AppText></Pressable>}
         <Pressable accessibilityRole="button" accessibilityLabel="Retry saving and tracking" disabled={busy} onPress={() => { void retry(); }} style={styles.trackingButton}><AppText style={styles.trackingButtonText}>{busy ? 'Retrying…' : 'Retry'}</AppText></Pressable>
@@ -147,9 +155,18 @@ const styles = StyleSheet.create({
   tabLabel: { fontFamily: theme.fonts.medium, fontSize: 10, marginTop: 4 },
   tabIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 12 },
   activeTabIcon: { backgroundColor: 'rgba(112,244,11,0.15)' },
-  trackingPanel: { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.border, borderTopWidth: 1, paddingHorizontal: 16, paddingVertical: 6, gap: 4 },
-  trackingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', position: 'relative', minHeight: 44 },
-  trackingInfo: { maxWidth: '35%', minWidth: 70, flexDirection: 'row', gap: 6, alignItems: 'center', minHeight: 44 },
+  trackingPanel: { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.border, borderTopWidth: 1, paddingHorizontal: 16, paddingVertical: 6, gap: 4, position: 'relative' },
+  trackingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 44, gap: 12 },
+  trackingInfo: { flex: 1, minWidth: 0, flexDirection: 'row', gap: 8, alignItems: 'center', minHeight: 44 },
+  aboveBadgeWrapper: {
+    position: 'absolute',
+    top: -34,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 99,
+  },
   centerBadgeWrapper: {
     position: 'absolute',
     left: 0,
@@ -161,24 +178,28 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   eventBadge: {
-    maxWidth: '55%',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 5,
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 6,
     paddingHorizontal: 8,
-    paddingVertical: 5,
-    maxHeight: 38,
+    paddingVertical: 3,
+    maxHeight: 28,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 3,
   },
   eventText: {
     fontFamily: theme.fonts.bold,
-    fontSize: 11,
-    flexShrink: 1,
+    fontSize: 10,
+    lineHeight: 14,
   },
   statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.primary },
-  statusText: { flex: 1 },
+  statusText: { flex: 1, minWidth: 0 },
   statusLabel: { color: theme.colors.primary, fontFamily: theme.fonts.mono, fontSize: 10, lineHeight: 14 },
   statusDescription: { fontSize: 10, lineHeight: 14, color: theme.colors.muted },
   trackingButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12, backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, zIndex: 11 },

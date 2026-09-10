@@ -58,6 +58,7 @@ export interface ActivityEntry {
   timestamp: number;
   message: string;
   kind: 'game' | 'tracking' | 'spawn' | 'collection' | 'event';
+  item?: EventItem;
 }
 
 export interface SoloSnapshot {

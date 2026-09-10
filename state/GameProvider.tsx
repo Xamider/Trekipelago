@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { Alert, AppState, Vibration } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { clearAllEffects, collectOrb as collect, injectTestEffects, resetSpawnClock, rollSpawn } from '../game/engine';
-import type { SoloConfig, SoloSnapshot } from '../game/types';
+import type { EventItem, SoloConfig, SoloSnapshot } from '../game/types';
 import { repository } from '../storage/database';
 import { clearTrackingError, getTrackingError, subscribeTrackingErrors } from '../tracking/errors';
 import { ForegroundClock } from '../tracking/foregroundClock';
@@ -18,73 +18,141 @@ export interface RewardNotice {
   icon: keyof typeof Feather.glyphMap;
 }
 
-export function getEventVisuals(message: string) {
-  const isTrap = /trap|slow|blind|half/i.test(message);
+export function getEventVisuals(item?: EventItem, message: string = '') {
+  const type = item?.type;
+
+  if (type === 'speed_up') {
+    return { color: '#4ade80', bg: 'rgba(74, 222, 128, 0.22)', border: '#16a34a', icon: 'activity' as const };
+  }
+  if (type === 'boost_distance_2x') {
+    return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.22)', border: '#0284c7', icon: 'trending-up' as const };
+  }
+  if (type === 'boost_drop_2x' || type === 'burst_orbs') {
+    return { color: '#70F40B', bg: 'rgba(112, 244, 11, 0.22)', border: '#16a34a', icon: 'zap' as const };
+  }
+  if (type === 'boost_collect_2x') {
+    return { color: '#c084fc', bg: 'rgba(192, 132, 252, 0.22)', border: '#9333ea', icon: 'plus-circle' as const };
+  }
+  if (type === 'passive_collector') {
+    return { color: '#c084fc', bg: 'rgba(192, 132, 252, 0.22)', border: '#9333ea', icon: 'cpu' as const };
+  }
+  if (type === 'progressive_speed') {
+    return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.22)', border: '#0284c7', icon: 'trending-up' as const };
+  }
+  if (type === 'unlock_background') {
+    return { color: '#34d399', bg: 'rgba(52, 211, 153, 0.22)', border: '#059669', icon: 'check-circle' as const };
+  }
+  if (type === 'trap_slow') {
+    return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'activity' as const };
+  }
+  if (type === 'trap_distance_half' || type === 'trap_distance') {
+    return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'trending-down' as const };
+  }
+  if (type === 'trap_drop_half' || type === 'trap_orbs') {
+    return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'zap-off' as const };
+  }
+  if (type === 'trap_collect_half') {
+    return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'minus-circle' as const };
+  }
+  if (type === 'trap_blind') {
+    return { color: '#f87171', bg: 'rgba(248, 113, 113, 0.22)', border: '#dc2626', icon: 'eye-off' as const };
+  }
+
+  // Fallback: identify received item from message start
+  const isTrap = /trap|slow|blind|half/i.test(message) && !/^.*?(speed boost|double distance|double orb|double collect)/i.test(message);
   if (isTrap) {
-    if (/blind/i.test(message)) {
-      return { color: '#f87171', bg: 'rgba(248, 113, 113, 0.22)', border: '#dc2626', icon: 'eye-off' as const };
-    }
-    if (/slow/i.test(message)) {
-      return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'activity' as const };
-    }
-    if (/distance/i.test(message)) {
-      return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'trending-down' as const };
-    }
-    if (/drop|orbs/i.test(message)) {
-      return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'zap-off' as const };
-    }
-    if (/collect/i.test(message)) {
-      return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'minus-circle' as const };
-    }
+    if (/blind/i.test(message)) return { color: '#f87171', bg: 'rgba(248, 113, 113, 0.22)', border: '#dc2626', icon: 'eye-off' as const };
+    if (/slow/i.test(message)) return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'activity' as const };
+    if (/distance/i.test(message)) return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'trending-down' as const };
+    if (/drop|orbs/i.test(message)) return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'zap-off' as const };
+    if (/collect/i.test(message)) return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'minus-circle' as const };
     return { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.22)', border: '#dc2626', icon: 'alert-triangle' as const };
   }
 
-  if (/speed boost|\+50% speed/i.test(message)) {
-    return { color: '#4ade80', bg: 'rgba(74, 222, 128, 0.22)', border: '#16a34a', icon: 'activity' as const };
-  }
-  if (/distance bonus|double distance|2x distance/i.test(message)) {
-    return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.22)', border: '#0284c7', icon: 'trending-up' as const };
-  }
-  if (/orb drop|2x orbs|orb energy|double orb/i.test(message)) {
-    return { color: '#70F40B', bg: 'rgba(112, 244, 11, 0.22)', border: '#16a34a', icon: 'zap' as const };
-  }
-  if (/collect.*2x|double collect|2x collect/i.test(message)) {
-    return { color: '#c084fc', bg: 'rgba(192, 132, 252, 0.22)', border: '#9333ea', icon: 'plus-circle' as const };
-  }
-  if (/collector/i.test(message)) {
-    return { color: '#c084fc', bg: 'rgba(192, 132, 252, 0.22)', border: '#9333ea', icon: 'cpu' as const };
-  }
-  if (/background/i.test(message)) {
-    return { color: '#34d399', bg: 'rgba(52, 211, 153, 0.22)', border: '#059669', icon: 'check-circle' as const };
-  }
-  if (/speed limit/i.test(message)) {
-    return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.22)', border: '#0284c7', icon: 'trending-up' as const };
-  }
+  if (/speed boost|\+50% speed/i.test(message)) return { color: '#4ade80', bg: 'rgba(74, 222, 128, 0.22)', border: '#16a34a', icon: 'activity' as const };
+  if (/distance bonus|double distance|2x distance/i.test(message)) return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.22)', border: '#0284c7', icon: 'trending-up' as const };
+  if (/orb drop|2x orbs|orb energy|double orb/i.test(message)) return { color: '#70F40B', bg: 'rgba(112, 244, 11, 0.22)', border: '#16a34a', icon: 'zap' as const };
+  if (/collect.*2x|double collect|2x collect/i.test(message)) return { color: '#c084fc', bg: 'rgba(192, 132, 252, 0.22)', border: '#9333ea', icon: 'plus-circle' as const };
+  if (/collector/i.test(message)) return { color: '#c084fc', bg: 'rgba(192, 132, 252, 0.22)', border: '#9333ea', icon: 'cpu' as const };
+  if (/background/i.test(message)) return { color: '#34d399', bg: 'rgba(52, 211, 153, 0.22)', border: '#059669', icon: 'check-circle' as const };
+  if (/speed limit/i.test(message)) return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.22)', border: '#0284c7', icon: 'trending-up' as const };
 
   return { color: '#70F40B', bg: 'rgba(112, 244, 11, 0.22)', border: '#16a34a', icon: 'award' as const };
 }
 
-export function getEventShortText(message: string): string {
-  let cleaned = message
-    .replace(/^Item found:\s*/i, '')
-    .replace(/\s*\([^)]*Milestone\)$/i, '')
-    .trim();
+export function getEventShortText(
+  item?: EventItem,
+  message: string = '',
+  collectorLevel?: number,
+  speedLevel?: number,
+): string {
+  if (item) {
+    const durStr = item.durationMs ? ` ${Math.round(item.durationMs / 60_000)}m` : '';
+    switch (item.type) {
+      case 'speed_up':
+        return `+50% Spd${durStr}`;
+      case 'boost_distance_2x':
+        return `2x Dist${durStr}`;
+      case 'boost_drop_2x':
+        return `2x Orbs${durStr}`;
+      case 'boost_collect_2x':
+        return `2x Col${durStr}`;
+      case 'trap_slow':
+        return `-50% Spd${durStr}`;
+      case 'trap_distance':
+      case 'trap_distance_half':
+        return `0.5x Dist${durStr}`;
+      case 'trap_orbs':
+      case 'trap_drop_half':
+        return `0.5x Orbs${durStr}`;
+      case 'trap_collect_half':
+        return `0.5x Col${durStr}`;
+      case 'trap_blind':
+        return `Blinded${durStr}`;
+      case 'passive_collector': {
+        const lvl = collectorLevel ?? (message.match(/Level\s*(\d+)/i)?.[1]);
+        return lvl ? `Collector L${lvl}` : 'Collector';
+      }
+      case 'progressive_speed': {
+        const lvl = speedLevel ?? (message.match(/Level\s*(\d+)/i)?.[1]);
+        return lvl ? `Speed L${lvl}` : 'Max Speed';
+      }
+      case 'unlock_background':
+        return message.includes('+250m') ? '+250m' : 'BG Track';
+      case 'burst_orbs':
+        return 'Orb Energy';
+    }
+  }
 
-  cleaned = cleaned
-    .replace(/^(Double Distance \(2x\)|2X DISTANCE)/i, '2x Distance')
-    .replace(/^(Double Orb Spawn Chance \(2x\)|2X ORBS)/i, '2x Orbs')
-    .replace(/^(Double Collected Orbs \(2x\)|2X COLLECT)/i, '2x Collect')
-    .replace(/^(Speed Boost \(\+50% speed limit\)|\+50% SPEED)/i, '+50% Speed')
-    .replace(/^(Slow Movement \(Trap\)|-50% SPEED)/i, 'Slow (-50%)')
-    .replace(/^(Half Distance \(Trap\)|0\.5X DISTANCE)/i, '0.5x Distance')
-    .replace(/^(Half Orb Spawn Chance \(Trap\)|0\.5X ORBS)/i, '0.5x Orbs')
-    .replace(/^(Half Collected Orbs \(Trap\)|0\.5X COLLECT)/i, '0.5x Collect')
-    .replace(/^(Map Blindness \(Trap\)|MAP BLINDED)/i, 'Map Blinded')
-    .replace(/^Passive Background Orb Collector/i, 'Collector')
-    .replace(/^Max Speed Limit Increased/i, 'Max Speed')
-    .replace(/^Background Tracking Unlocked!/i, 'BG Tracking');
+  // Fallback: extract received item and its duration from the message string
+  let durationStr = '';
+  const durMatch = message.match(/(?:for|extended by|activated for)\s*(\d+)\s*m/i)
+    || message.match(/(\d+)\s*min/i);
+  if (durMatch) {
+    durationStr = ` ${durMatch[1]}m`;
+  }
 
-  return cleaned;
+  if (/speed boost|\+50% speed/i.test(message)) return `+50% Spd${durationStr}`;
+  if (/double distance|2x distance/i.test(message)) return `2x Dist${durationStr}`;
+  if (/double orb|2x orb/i.test(message)) return `2x Orbs${durationStr}`;
+  if (/double collect|2x collect/i.test(message)) return `2x Col${durationStr}`;
+  if (/slow movement|-50% speed/i.test(message)) return `-50% Spd${durationStr}`;
+  if (/half distance|0\.5x distance/i.test(message)) return `0.5x Dist${durationStr}`;
+  if (/half orb|0\.5x orb/i.test(message)) return `0.5x Orbs${durationStr}`;
+  if (/half collect|0\.5x collect/i.test(message)) return `0.5x Col${durationStr}`;
+  if (/blind/i.test(message)) return `Blinded${durationStr}`;
+  if (/collector/i.test(message)) {
+    const m = message.match(/Level\s*(\d+)/i);
+    return m ? `Collector L${m[1]}` : 'Collector';
+  }
+  if (/speed limit/i.test(message)) {
+    const m = message.match(/Level\s*(\d+)/i);
+    return m ? `Speed L${m[1]}` : 'Max Speed';
+  }
+  if (/background/i.test(message)) return 'BG Track';
+  if (/250m/i.test(message)) return '+250m';
+
+  return message.length > 14 ? message.slice(0, 14) + '…' : message;
 }
 
 export function computeTrackingStatus(save: SoloSnapshot | null, loading: boolean, error: string | null, now: number): string {
@@ -158,8 +226,13 @@ export function GameProvider({ children }: PropsWithChildren) {
     }
 
     if (hasNewItem && latestEvent) {
-      const visuals = getEventVisuals(latestEvent.message);
-      const text = getEventShortText(latestEvent.message);
+      const visuals = getEventVisuals(latestEvent.item, latestEvent.message);
+      const text = getEventShortText(
+        latestEvent.item,
+        latestEvent.message,
+        currentSave.backgroundCollectorLevel,
+        currentSave.speedLevel,
+      );
       setRewardNotice({ id: latestEvent.id, text, ...visuals });
 
       if (prefs.vibrateOnReward) {

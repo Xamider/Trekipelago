@@ -173,7 +173,7 @@ export function SoloScreen({ navigation }: NativeStackScreenProps<RootStackParam
           </View>
         </View>
 
-        <View style={styles.buffRatioBox}>
+        <View style={styles.buffRatioSection}>
           <View style={styles.buffRatioHeader}>
             <AppText style={styles.buffRatioLabel}>FILLER ITEMS RATIO</AppText>
             <AppText style={styles.buffRatioValue}>
@@ -195,6 +195,7 @@ export function SoloScreen({ navigation }: NativeStackScreenProps<RootStackParam
             thumbTintColor="#70F40B"
             style={styles.ratioSlider}
           />
+          <AppText style={styles.hint}>Ratio of positive buffs versus traps in rewards.</AppText>
         </View>
         {validation ? <Notice>{validation}</Notice> : null}
         <AppButton title="Start journey" loading={busy} onPress={() => { void submit(); }} />
@@ -213,9 +214,9 @@ export function SoloScreen({ navigation }: NativeStackScreenProps<RootStackParam
 
 const styles = StyleSheet.create({
   content: { padding: 16, gap: 16 },
-  intro: { alignItems: 'center', gap: 8, paddingVertical: 12 },
-  title: { fontFamily: theme.fonts.display, fontSize: 24, textAlign: 'center' },
-  description: { color: theme.colors.muted, textAlign: 'center', fontSize: 13 },
+  intro: { alignItems: 'center', gap: 10, paddingVertical: 16 },
+  title: { fontFamily: theme.fonts.display, fontSize: 24, lineHeight: 32, textAlign: 'center' },
+  description: { color: theme.colors.muted, textAlign: 'center', fontSize: 13, lineHeight: 18 },
   row: { flexDirection: 'row', gap: 12 },
   summaryCard: { gap: 12 },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between' },
@@ -228,9 +229,10 @@ const styles = StyleSheet.create({
   effectItem: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
   effectName: { fontSize: 12, fontFamily: theme.fonts.mono, color: theme.colors.text },
   caption: { color: theme.colors.muted, fontSize: 12 },
-  buffRatioBox: { backgroundColor: theme.colors.surface, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 10, padding: 12, gap: 10 },
+  buffRatioSection: { gap: 6, paddingVertical: 4 },
   buffRatioHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  buffRatioLabel: { color: theme.colors.secondary, fontSize: 11, fontFamily: theme.fonts.bold, letterSpacing: 0.5 },
+  buffRatioLabel: { color: theme.colors.secondary, fontFamily: theme.fonts.semibold, textTransform: 'uppercase', fontSize: 13, lineHeight: 17 },
   buffRatioValue: { fontFamily: theme.fonts.mono, fontSize: 12 },
-  ratioSlider: { width: '100%', height: 40 },
+  hint: { color: theme.colors.muted, fontSize: 12, lineHeight: 17 },
+  ratioSlider: { width: '100%', height: 40, marginVertical: -4 },
 });
