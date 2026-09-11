@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Image } from 'expo-image';
 import MapView, { Circle, Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 
 import type { Orb } from '../game/types';
 import type { AppPreferences } from '../state/preferences';
-import { designAssets, theme } from '../theme';
+import { theme } from '../theme';
 import type { Coordinates, PointOfInterest } from '../types';
 
 const darkMapStyle = [
@@ -42,47 +41,48 @@ type LocationMapProps = {
   onCollectOrb: (id: string) => void;
 };
 
-function MapPoint({ coordinate, icon, title, description, onPress, disabled = false }: {
+function MapPoint({ coordinate, icon, title, description, onPress }: {
   coordinate: Coordinates;
   icon: 'amber' | 'cyan' | 'orb';
   title?: string;
   description?: string;
   onPress?: () => void;
-  disabled?: boolean;
 }) {
-  const [imageLoaded, setImageLoaded] = useState(false);
-  const [trackImage, setTrackImage] = useState(true);
+  const [tracksViewChanges, setTracksViewChanges] = useState(true);
 
   useEffect(() => {
-    if (!imageLoaded) return;
-    const timer = setTimeout(() => setTrackImage(false), 250);
+    const timer = setTimeout(() => setTracksViewChanges(false), 300);
     return () => clearTimeout(timer);
-  }, [imageLoaded]);
+  }, []);
 
-  return <Marker
-    coordinate={coordinate}
-    title={title}
-    description={description}
-    anchor={{ x: 0.5, y: 0.5 }}
-    tracksViewChanges={trackImage}
-    opacity={disabled ? 0.45 : 1}
-    zIndex={icon === 'orb' ? 3 : 1}
-    stopPropagation={true}
-    onPress={disabled ? undefined : onPress}
-    accessibilityLabel={icon === 'orb' ? 'Collect light orb' : title}
-    accessibilityRole={icon === 'orb' ? 'button' : undefined}
-    accessibilityState={{ disabled }}
-  >
-    <View collapsable={false} style={icon === 'orb' ? styles.orbTarget : styles.poiTarget}>
-      <Image source={designAssets[icon]} contentFit="contain"
-        style={icon === 'orb' ? styles.orbImage : styles.poiImage}
-        onLoad={() => setImageLoaded(true)} />
-    </View>
-  </Marker>;
+  return (
+    <Marker
+      coordinate={coordinate}
+      title={title}
+      description={description}
+      anchor={{ x: 0.5, y: 0.5 }}
+      tracksViewChanges={tracksViewChanges}
+      zIndex={icon === 'orb' ? 3 : 1}
+      stopPropagation={true}
+      onPress={onPress}
+      accessibilityLabel={icon === 'orb' ? 'Collect light orb' : title}
+      accessibilityRole={icon === 'orb' ? 'button' : undefined}
+    >
+      <View collapsable={false} style={icon === 'orb' ? styles.orbTarget : styles.poiTarget}>
+        {icon === 'orb' ? (
+          <View style={styles.orbDisc}>
+            <View style={styles.orbCore} />
+          </View>
+        ) : (
+          <View style={[styles.poiDot, icon === 'cyan' ? styles.poiCyan : styles.poiAmber]} />
+        )}
+      </View>
+    </Marker>
+  );
 }
 
 export function LocationMap({ location, radiusMeters, orbs, mapStyle, pointsOfInterest,
-  canCollect, recenterVersion, onCollectOrb }: LocationMapProps) {
+  recenterVersion, onCollectOrb }: LocationMapProps) {
   const map = useRef<MapView>(null);
   const following = useRef(true);
   const latestCenter = useRef(location);
@@ -113,7 +113,7 @@ export function LocationMap({ location, radiusMeters, orbs, mapStyle, pointsOfIn
       toolbarEnabled={false}
       showsIndoors={false}
       moveOnMarkerPress={false}
-      mapPadding={{ top: 170, right: 16, bottom: 50, left: 16 }}
+      mapPadding={{ top: 220, right: 16, bottom: 50, left: 16 }}
       onMapReady={() => setReady(true)}
       onPanDrag={() => { following.current = false; }}
       onRegionChangeComplete={(_, detail) => { if (detail.isGesture) following.current = false; }}
@@ -149,8 +149,14 @@ export function LocationMap({ location, radiusMeters, orbs, mapStyle, pointsOfIn
           icon={point.snippet.includes('cafe') ? 'cyan' : 'amber'}
         />
       ))}
-      {orbs.map((orb) => <MapPoint key={orb.id} coordinate={orb} icon="orb"
-        disabled={!canCollect} onPress={() => onCollectOrb(orb.id)} />)}
+      {orbs.map((orb) => (
+        <MapPoint
+          key={orb.id}
+          coordinate={orb}
+          icon="orb"
+          onPress={() => onCollectOrb(orb.id)}
+        />
+      ))}
     </MapView>
   );
 }
@@ -159,8 +165,25 @@ const styles = StyleSheet.create({
   map: { flex: 1 },
   beaconHalo: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(112,244,11,0.3)', alignItems: 'center', justifyContent: 'center' },
   beacon: { width: 20, height: 20, borderRadius: 10, backgroundColor: theme.colors.primary },
-  orbTarget: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  poiTarget: { width: 18, height: 18, alignItems: 'center', justifyContent: 'center' },
-  orbImage: { width: 32, height: 32 },
-  poiImage: { width: 10, height: 10 },
+  orbTarget: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
+  orbDisc: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#0D1703',
+    borderWidth: 2,
+    borderColor: '#70F40B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  orbCore: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#70F40B',
+  },
+  poiTarget: { width: 22, height: 22, alignItems: 'center', justifyContent: 'center' },
+  poiDot: { width: 14, height: 14, borderRadius: 7, borderWidth: 2, borderColor: '#0D1703' },
+  poiCyan: { backgroundColor: '#2DD4BF' },
+  poiAmber: { backgroundColor: '#F59E0B' },
 });

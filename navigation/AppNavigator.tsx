@@ -4,8 +4,9 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator, BottomTabBar } from '@react-navigation/bottom-tabs';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
+import { Feather } from '@expo/vector-icons';
 
-import { AppScreen, AppText, AssetIcon } from '../components/ui';
+import { AppScreen, AppText } from '../components/ui';
 import { ArchipelagoScreen } from '../screens/ArchipelagoScreen';
 import { ConsoleScreen } from '../screens/ConsoleScreen';
 import { HomeScreen } from '../screens/HomeScreen';
@@ -29,7 +30,8 @@ const Tabs = createBottomTabNavigator<ExpeditionTabParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 function TrackingStrip() {
-  const { save, busy, error, status, pause, resume, retry, now } = useGameStatus();
+  const { save, busy, error, status, pause, resume, retry, now, rewardNotice, dismissRewardNotice } = useGameStatus();
+  const [rowWidth, setRowWidth] = useState(0);
   
   const missingGpsDurationMs = save?.lastFix ? Math.max(0, now - save.lastFix.timestamp) : 0;
   const isGpsDelaying = save?.tracking && missingGpsDurationMs > 60000;
@@ -44,14 +46,32 @@ function TrackingStrip() {
 
   return <View style={styles.trackingPanel}>
     {error && <AppText accessibilityLiveRegion="polite" style={styles.error}>{error}</AppText>}
-    <View style={styles.trackingRow}>
+
+    {rewardNotice && (
+      <Pressable
+        onPress={dismissRewardNotice}
+        accessibilityRole="button"
+        accessibilityLabel={`Reward: ${rewardNotice.text}. Tap to dismiss`}
+        style={rowWidth >= 440 ? styles.centerBadgeWrapper : styles.aboveBadgeWrapper}
+        pointerEvents="box-none">
+        <View style={[styles.eventBadge, { backgroundColor: rewardNotice.bg, borderColor: rewardNotice.border }]}>
+          <Feather name={rewardNotice.icon} size={11} color={rewardNotice.color} />
+          <AppText numberOfLines={1} style={[styles.eventText, { color: rewardNotice.color }]}>
+            {rewardNotice.text}
+          </AppText>
+        </View>
+      </Pressable>
+    )}
+
+    <View style={styles.trackingRow} onLayout={e => setRowWidth(e.nativeEvent.layout.width)}>
       {save && <Pressable accessibilityRole="button" accessibilityLabel="Open Solo map" style={styles.trackingInfo} onPress={() => { if (navigationRef.isReady()) navigationRef.navigate('Expedition', { screen: 'Map' }); }}>
         <View style={[styles.statusDot, !save.tracking && { backgroundColor: theme.colors.subtle }]} />
         <View style={styles.statusText}>
-          <AppText style={styles.statusLabel}>SOLO {save.tracking ? 'TRACKING' : 'PAUSED'}</AppText>
-          <AppText style={[styles.statusDescription, isGpsDelaying && { color: warningColor }]}>{status}</AppText>
+          <AppText numberOfLines={1} style={styles.statusLabel}>SOLO {save.tracking ? 'TRACKING' : 'PAUSED'}</AppText>
+          <AppText numberOfLines={1} style={[styles.statusDescription, isGpsDelaying && { color: warningColor }]}>{status}</AppText>
         </View>
       </Pressable>}
+
       {error ? <>
         {save?.tracking && <Pressable accessibilityRole="button" accessibilityLabel="Pause Solo tracking" disabled={busy} onPress={() => { void pause(); }} style={styles.trackingButton}><AppText style={styles.trackingButtonText}>Pause</AppText></Pressable>}
         <Pressable accessibilityRole="button" accessibilityLabel="Retry saving and tracking" disabled={busy} onPress={() => { void retry(); }} style={styles.trackingButton}><AppText style={styles.trackingButtonText}>{busy ? 'Retrying…' : 'Retry'}</AppText></Pressable>
@@ -78,7 +98,11 @@ function ExpeditionTabs() {
       tabBarActiveTintColor: theme.colors.primary,
       tabBarInactiveTintColor: theme.colors.subtle,
       tabBarLabelStyle: styles.tabLabel,
-      tabBarIcon: ({ focused, color }) => <View style={[styles.tabIcon, focused && styles.activeTabIcon]}><AssetIcon name={route.name === 'Map' ? 'map' : 'console'} size={20} color={color} /></View>,
+      tabBarIcon: ({ focused, color }) => (
+        <View style={[styles.tabIcon, focused && styles.activeTabIcon]}>
+          <Feather name={route.name === 'Map' ? 'map' : 'terminal'} size={20} color={color} />
+        </View>
+      ),
       sceneStyle: { backgroundColor: theme.colors.background },
     })}>
     <Tabs.Screen name="Map" component={MapScreen} />
@@ -131,14 +155,54 @@ const styles = StyleSheet.create({
   tabLabel: { fontFamily: theme.fonts.medium, fontSize: 10, marginTop: 4 },
   tabIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 12 },
   activeTabIcon: { backgroundColor: 'rgba(112,244,11,0.15)' },
-  trackingPanel: { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.border, borderTopWidth: 1, paddingHorizontal: 16, paddingVertical: 6, gap: 4 },
-  trackingRow: { flexDirection: 'row', gap: 12, alignItems: 'center' },
-  trackingInfo: { flex: 1, flexDirection: 'row', gap: 8, alignItems: 'center', minHeight: 44 },
+  trackingPanel: { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.border, borderTopWidth: 1, paddingHorizontal: 16, paddingVertical: 6, gap: 4, position: 'relative' },
+  trackingRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: 44, gap: 12 },
+  trackingInfo: { flex: 1, minWidth: 0, flexDirection: 'row', gap: 8, alignItems: 'center', minHeight: 44 },
+  aboveBadgeWrapper: {
+    position: 'absolute',
+    top: -34,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 99,
+  },
+  centerBadgeWrapper: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  eventBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    maxHeight: 28,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 3,
+  },
+  eventText: {
+    fontFamily: theme.fonts.bold,
+    fontSize: 10,
+    lineHeight: 14,
+  },
   statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: theme.colors.primary },
-  statusText: { flex: 1 },
+  statusText: { flex: 1, minWidth: 0 },
   statusLabel: { color: theme.colors.primary, fontFamily: theme.fonts.mono, fontSize: 10, lineHeight: 14 },
   statusDescription: { fontSize: 10, lineHeight: 14, color: theme.colors.muted },
-  trackingButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12, backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8 },
+  trackingButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12, backgroundColor: theme.colors.background, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 8, zIndex: 11 },
   trackingButtonText: { color: theme.colors.primary, fontFamily: theme.fonts.bold, fontSize: 12 },
   error: { fontSize: 12, lineHeight: 17, color: theme.colors.danger },
 });

@@ -8,6 +8,7 @@ export interface AppPreferences {
   showPOI: boolean;
   distanceUnit: 'km' | 'mi';
   maxSpeedLevel: number;
+  vibrateOnReward: boolean;
 }
 
 export const DEFAULT_PREFERENCES: AppPreferences = {
@@ -20,6 +21,7 @@ export const DEFAULT_PREFERENCES: AppPreferences = {
   showPOI: false,
   distanceUnit: 'km',
   maxSpeedLevel: 0,
+  vibrateOnReward: true,
 };
 
 export function validatePreferences(value: AppPreferences): void {
@@ -27,7 +29,7 @@ export function validatePreferences(value: AppPreferences): void {
     || !['dark', 'satellite', 'topographic'].includes(value.mapStyle)
     || !['km', 'mi'].includes(value.distanceUnit)
     || !Number.isInteger(value.maxSpeedLevel) || value.maxSpeedLevel < 0
-    || ['soundEffects', 'pushNotifications', 'checkAlerts', 'partyUpdates', 'showPOI']
+    || ['soundEffects', 'pushNotifications', 'checkAlerts', 'partyUpdates', 'showPOI', 'vibrateOnReward']
       .some(key => typeof value[key as keyof AppPreferences] !== 'boolean')) {
     throw new Error('Invalid app preferences.');
   }

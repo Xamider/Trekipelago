@@ -18,6 +18,8 @@ export function SettingsScreen() {
   useEffect(() => setVolume(preferences.volume), [preferences.volume]);
   const update = (patch: Partial<AppPreferences>) => { void setPreferences(patch); };
 
+  const notificationsDisabled = !preferences.pushNotifications;
+
   return <AppScreen>
     <AppHeader title="Settings" />
     <View style={styles.content}>
@@ -32,22 +34,52 @@ export function SettingsScreen() {
         </Card>
         <AppText style={styles.pending}>Preferences saved. Audio is coming in a future version.</AppText>
       </View>
+
       <View style={styles.section}>
         <SectionLabel>Notifications</SectionLabel>
         <Card style={styles.card}>
-          <SettingRow label="Push Notifications"><Toggle label="Push Notifications" value={preferences.pushNotifications} onChange={pushNotifications => update({ pushNotifications })} disabled={busy} /></SettingRow>
-          <SettingRow label="Check Alerts" divider><Toggle label="Check Alerts" value={preferences.checkAlerts} onChange={checkAlerts => update({ checkAlerts })} disabled={busy} /></SettingRow>
-          <SettingRow label="Party Updates" divider><Toggle label="Party Updates" value={preferences.partyUpdates} onChange={partyUpdates => update({ partyUpdates })} disabled={busy} /></SettingRow>
+          <SettingRow label="Expedition Notifications"><Toggle label="Expedition Notifications" value={preferences.pushNotifications} onChange={pushNotifications => update({ pushNotifications })} disabled={busy} /></SettingRow>
+          
+          <View style={[styles.dependentSettings, notificationsDisabled && styles.disabledSection]}>
+            <SettingRow label="Vibrate on Rewards" divider>
+              <Toggle
+                label="Vibrate on Rewards"
+                value={preferences.vibrateOnReward}
+                onChange={vibrateOnReward => update({ vibrateOnReward })}
+                disabled={busy || notificationsDisabled}
+              />
+            </SettingRow>
+            <SettingRow label="Check Alerts" divider>
+              <Toggle
+                label="Check Alerts"
+                value={preferences.checkAlerts}
+                onChange={checkAlerts => update({ checkAlerts })}
+                disabled={busy || notificationsDisabled}
+              />
+            </SettingRow>
+            <SettingRow label="Party Updates" divider>
+              <Toggle
+                label="Party Updates"
+                value={preferences.partyUpdates}
+                onChange={partyUpdates => update({ partyUpdates })}
+                disabled={busy || notificationsDisabled}
+              />
+            </SettingRow>
+          </View>
         </Card>
-        <AppText style={styles.pending}>Preferences saved. Game alerts are coming in a future version.</AppText>
+        <AppText style={styles.pending}>
+          {notificationsDisabled
+            ? 'Notifications are paused. Background updates and alerts are inactive.'
+            : 'Controls notifications, vibration, and background expedition alerts.'}
+        </AppText>
       </View>
+
       <View style={styles.section}>
         <SectionLabel>Map</SectionLabel>
         <Card style={styles.card}>
           <SettingRow label="Map Style"><Pressable accessibilityRole="button" accessibilityLabel={`Map style: ${preferences.mapStyle}`} onPress={() => setChoosingStyle(true)} style={styles.dropdown}>
             <AppText style={styles.dropdownText}>{mapStyles.find(option => option.value === preferences.mapStyle)?.label}</AppText><AssetIcon name="down" size={14} />
           </Pressable></SettingRow>
-          <SettingRow label="Show Points of Interest" divider><Toggle label="Show Points of Interest" value={preferences.showPOI} onChange={showPOI => update({ showPOI })} disabled={busy} /></SettingRow>
           <SettingRow label="Distance Unit" divider><View style={styles.segments}>
             {(['km', 'mi'] as const).map(unit => <Pressable accessibilityRole="radio" accessibilityState={{ checked: preferences.distanceUnit === unit, disabled: busy }} accessibilityLabel={unit === 'km' ? 'Kilometers' : 'Miles'} key={unit} disabled={busy} onPress={() => update({ distanceUnit: unit })}
               style={[styles.segment, preferences.distanceUnit === unit && styles.selectedSegment]}>
@@ -55,9 +87,9 @@ export function SettingsScreen() {
             </Pressable>)}
           </View></SettingRow>
         </Card>
-        <AppText style={styles.pending}>Showing points of interest sends your approximate location to OpenStreetMap community servers (Overpass). Off by default.</AppText>
       </View>
     </View>
+
     <Modal transparent visible={choosingStyle} animationType="fade" onRequestClose={() => setChoosingStyle(false)}>
       <View style={styles.modal}>
         <Pressable accessibilityLabel="Close map style selection" style={StyleSheet.absoluteFill} onPress={() => setChoosingStyle(false)} />
@@ -80,6 +112,8 @@ const styles = StyleSheet.create({
   value: { color: theme.colors.primary, fontFamily: theme.fonts.bold, fontSize: 13 },
   slider: { height: 36, marginHorizontal: -8 },
   pending: { color: theme.colors.muted, fontSize: 11, lineHeight: 16, paddingTop: 2 },
+  dependentSettings: {},
+  disabledSection: { opacity: 0.35 },
   dropdown: { backgroundColor: theme.colors.background, borderWidth: 1, borderColor: '#1a2e05', borderRadius: 6, minHeight: 44, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
   dropdownText: { fontSize: 13, fontFamily: theme.fonts.medium },
   segments: { backgroundColor: theme.colors.background, borderWidth: 1, borderColor: '#1a2e05', borderRadius: 6, padding: 2, flexDirection: 'row' },

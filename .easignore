@@ -1,0 +1,62 @@
+# Node dependencies
+node_modules/
+.npm/
+.pnpm-store/
+
+# Local Android & iOS native directories (generated during local development)
+# EAS Build runs 'expo prebuild' freshly on the remote builder
+android/
+ios/
+
+# Expo, Metro & build caches
+.expo/
+.expo-shared/
+dist/
+web-build/
+.build/
+coverage/
+*.tsbuildinfo
+.metro/
+.cache/
+
+# Local environment & secrets
+.env*
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.p8
+*.pem
+*.mobileprovision
+*.key
+
+# Editor and AI configuration folders
+.vscode/
+.idea/
+.claude/
+.agents/
+.gemini/
+
+# Unit tests (not needed in runtime bundle)
+*.test.ts
+*.test.tsx
+**/__tests__/**
+**/__mocks__/**
+
+# Documentation & spec files
+ARCHIPELAGO.md
+CLEANUP_PROPOSALS.md
+README.md
+LICENSE
+
+# Temporary & build outputs
+*.log
+npm-debug.log*
+yarn-debug.log*
+*.apk
+*.aab
+*.ipa
+*.tar.gz
+*.tgz
+tmp/
+temp/

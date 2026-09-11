@@ -6,17 +6,20 @@ import { theme } from '../theme';
 
 export function ConsoleScreen() {
   const { save } = useGame();
-  const entries = [...(save?.activity ?? [])].sort((left, right) => right.timestamp - left.timestamp);
+  const entries = [...(save?.activity ?? [])]
+    .filter(entry => entry.kind !== 'spawn' && entry.kind !== 'collection' && entry.kind !== 'tracking')
+    .sort((left, right) => right.timestamp - left.timestamp);
+
   return <AppScreen scroll={false}>
     <AppHeader title="Expedition Console" />
     <View style={styles.intro}>
       <AssetIcon name="console" size={24} color={theme.colors.primary} />
-      <View style={styles.introText}><AppText style={styles.heading}>Your journey, as it happens</AppText><AppText style={styles.subtitle}>Latest 100 events · saved on this device</AppText></View>
+      <View style={styles.introText}><AppText style={styles.heading}>Your journey, as it happens</AppText><AppText style={styles.subtitle}>Milestones & rewards · saved on this device</AppText></View>
     </View>
     <FlatList data={entries} keyExtractor={item => item.id} contentContainerStyle={styles.list}
-      ListEmptyComponent={<View style={styles.empty}><AppText style={styles.subtitle}>Your expedition activity will appear here.</AppText></View>}
+      ListEmptyComponent={<View style={styles.empty}><AppText style={styles.subtitle}>Your expedition milestones and rewards will appear here.</AppText></View>}
       renderItem={({ item }) => <View style={styles.entry}>
-        <View style={styles.entryHeader}><AppText style={[styles.kind, item.kind === 'collection' && { color: theme.colors.primary }]}>{item.kind}</AppText>
+        <View style={styles.entryHeader}><AppText style={[styles.kind, { color: item.kind === 'event' ? theme.colors.primary : theme.colors.secondary }]}>{item.kind}</AppText>
           <AppText style={styles.timestamp}>{new Date(item.timestamp).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' })}</AppText></View>
         <AppText style={styles.message}>{item.message}</AppText>
       </View>} />

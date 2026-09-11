@@ -4,6 +4,7 @@ import {
   StyleProp, StyleSheet, Text, TextInput, TextInputProps, TextProps, View, ViewStyle,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { Feather } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -41,18 +42,20 @@ export function AppScreen({ children, scroll = true, topo = false, contentStyle 
   );
 }
 
-export function AppHeader({ title, onBack, onAction, actionLabel = 'Home' }: {
-  title: string; onBack?: () => void; onAction?: () => void; actionLabel?: string;
+export function AppHeader({ title, onBack, onAction, actionLabel = 'Settings', backIcon = 'back' }: {
+  title: string; onBack?: () => void; onAction?: () => void; actionLabel?: string; backIcon?: keyof typeof designAssets | 'feather-home';
 }) {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   return <View style={styles.header}>
-    <Pressable accessibilityRole="button" accessibilityLabel="Back" hitSlop={4} style={styles.iconButton} onPress={onBack ?? (() => navigation.canGoBack() ? navigation.goBack() : navigation.navigate('Home'))}>
-      <AssetIcon name="back" size={20} />
+    <Pressable accessibilityRole="button" accessibilityLabel="Back" hitSlop={12} style={styles.iconButton} onPress={onBack ?? (() => navigation.canGoBack() ? navigation.goBack() : navigation.navigate('Home'))}>
+      {backIcon === 'feather-home' ? <Feather name="home" size={24} color={theme.colors.text} /> : <AssetIcon name={backIcon} size={20} />}
     </Pressable>
     <AppText style={styles.headerTitle}>{title}</AppText>
-    <Pressable accessibilityRole="button" accessibilityLabel={actionLabel} hitSlop={4} style={styles.iconButton} onPress={onAction ?? (() => navigation.navigate('Home'))}>
-      <AssetIcon name="compass" size={20} />
-    </Pressable>
+    {onAction ? (
+      <Pressable accessibilityRole="button" accessibilityLabel={actionLabel} hitSlop={12} style={styles.iconButton} onPress={onAction}>
+        <AssetIcon name="compass" size={20} />
+      </Pressable>
+    ) : <View style={{ width: 40 }} />}
   </View>;
 }
 
@@ -140,3 +143,4 @@ const styles = StyleSheet.create({
   errorNotice: { backgroundColor: 'rgba(229,9,20,0.08)', borderColor: 'rgba(229,9,20,0.3)' },
   noticeText: { flex: 1, color: theme.colors.secondary, fontSize: 12, lineHeight: 18 },
 });
+

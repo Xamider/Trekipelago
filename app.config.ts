@@ -11,9 +11,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     splash: {
       backgroundColor: "#0d1703",
     },
-    androidNavigationBar: {
-      backgroundColor: "#050c02"
-    },
     android: {
       ...config.android,
       predictiveBackGestureEnabled: false,
@@ -24,6 +21,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         isAndroidBackgroundLocationEnabled: true,
         isAndroidForegroundServiceEnabled: true,
         androidForegroundServiceIcon: './assets/android-icon-monochrome.png',
+      }],
+      ['expo-navigation-bar', {
+        backgroundColor: '#050c02',
       }],
       'expo-font',
       'expo-image',

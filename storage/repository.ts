@@ -1,9 +1,40 @@
+import { DEFAULT_SOLO_CONFIG } from '../game/engine';
 import type { ActivityEntry, Orb, SoloSnapshot } from '../game/types';
 import { DEFAULT_PREFERENCES, validatePreferences, type AppPreferences } from '../state/preferences';
 import type { SqlConnection, SqlDatabase } from './driver';
 
 type StoredSave = Omit<SoloSnapshot, 'orbs' | 'activity'>;
-export interface AppSnapshot { save: SoloSnapshot | null; preferences: AppPreferences }
+
+export interface ArchipelagoConfig {
+  host: string;
+  port: string;
+  slotName: string;
+  password?: string;
+}
+
+export interface ArchipelagoSaveState {
+  config: ArchipelagoConfig;
+  roomSeed?: string;
+  slotNumber?: number;
+  teamNumber?: number;
+  slotData?: Record<string, unknown>;
+  checkedLocations: number[];
+  receivedItems: Array<{
+    item: number;
+    location: number;
+    player: number;
+    flags: number;
+  }>;
+  receivedItemIndex: number;
+  goalReached: boolean;
+  updatedAt: number;
+}
+
+export interface AppSnapshot {
+  save: SoloSnapshot | null;
+  preferences: AppPreferences;
+  archipelago?: ArchipelagoSaveState;
+}
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS solo_save (
@@ -18,6 +49,9 @@ const SCHEMA = `
     position INTEGER NOT NULL, payload TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS preferences (
+    id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS archipelago_state (
     id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL
   );
   PRAGMA user_version = 1;
@@ -49,6 +83,8 @@ export function createRepository(open: () => Promise<SqlDatabase>) {
           const version = await tx.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
           if ((version?.user_version ?? 0) > 1) throw new Error('This save needs a newer version of Trekipelago.');
           if (!version?.user_version) await tx.execAsync(SCHEMA);
+          // Ensure archipelago_state table exists even on existing databases at version 1
+          await tx.execAsync('CREATE TABLE IF NOT EXISTS archipelago_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL);');
         }));
         return db;
       })().catch(error => { ready = undefined; throw error; });
@@ -78,6 +114,14 @@ export function createRepository(open: () => Promise<SqlDatabase>) {
     const row = await tx.getFirstAsync<{ payload: string }>('SELECT payload FROM solo_save WHERE id = 1');
     if (!row) return null;
     const saved = JSON.parse(row.payload) as StoredSave;
+    if (saved.config) {
+      if (saved.config.spawnReduction === 0.25) {
+        saved.config.spawnReduction = DEFAULT_SOLO_CONFIG.spawnReduction;
+      }
+      if (saved.config.recoveryDistanceMeters === 100) {
+        saved.config.recoveryDistanceMeters = DEFAULT_SOLO_CONFIG.recoveryDistanceMeters;
+      }
+    }
     const orbs = await tx.getAllAsync<{ payload: string }>('SELECT payload FROM orbs ORDER BY rowid');
     const activity = await tx.getAllAsync<{ payload: string }>('SELECT payload FROM activity ORDER BY position');
     return { ...saved, orbs: orbs.map(row => JSON.parse(row.payload) as Orb), activity: activity.map(row => JSON.parse(row.payload) as ActivityEntry) };
@@ -127,7 +171,9 @@ export function createRepository(open: () => Promise<SqlDatabase>) {
         const row = await tx.getFirstAsync<{ payload: string }>('SELECT payload FROM preferences WHERE id = 1');
         const preferences: AppPreferences = { ...DEFAULT_PREFERENCES, ...(row ? JSON.parse(row.payload) : {}) };
         validatePreferences(preferences);
-        return { save, preferences };
+        const archRow = await tx.getFirstAsync<{ payload: string }>('SELECT payload FROM archipelago_state WHERE id = 1');
+        const archipelago = archRow ? (JSON.parse(archRow.payload) as ArchipelagoSaveState) : undefined;
+        return { save, preferences, ...(archipelago ? { archipelago } : {}) };
       }));
     },
     /** Read, transform, and commit together. Never write a snapshot captured by a screen. */
@@ -159,6 +205,115 @@ export function createRepository(open: () => Promise<SqlDatabase>) {
           await tx.runAsync('INSERT INTO preferences (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload', JSON.stringify(next));
         });
         notify();
+      });
+    },
+    readArchipelagoState(): Promise<ArchipelagoSaveState | null> {
+      return enqueue(() => transaction(async tx => {
+        const row = await tx.getFirstAsync<{ payload: string }>('SELECT payload FROM archipelago_state WHERE id = 1');
+        return row ? (JSON.parse(row.payload) as ArchipelagoSaveState) : null;
+      }));
+    },
+    updateArchipelagoState(transform: (current: ArchipelagoSaveState | null) => ArchipelagoSaveState | null): Promise<ArchipelagoSaveState | null> {
+      return enqueue(async () => {
+        let changed = false;
+        const result = await transaction(async tx => {
+          const row = await tx.getFirstAsync<{ payload: string }>('SELECT payload FROM archipelago_state WHERE id = 1');
+          const previous = row ? (JSON.parse(row.payload) as ArchipelagoSaveState) : null;
+          const next = transform(previous);
+          changed = next !== previous;
+          if (changed && next) {
+            await tx.runAsync(
+              'INSERT INTO archipelago_state (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload',
+              JSON.stringify(next)
+            );
+          } else if (changed) {
+            await tx.runAsync('DELETE FROM archipelago_state WHERE id = 1');
+          }
+          return next;
+        });
+        if (changed) notify();
+        return result;
+      });
+    },
+    saveArchipelagoConfig(config: ArchipelagoConfig): Promise<void> {
+      return enqueue(async () => {
+        await transaction(async tx => {
+          const row = await tx.getFirstAsync<{ payload: string }>('SELECT payload FROM archipelago_state WHERE id = 1');
+          const previous = row ? (JSON.parse(row.payload) as ArchipelagoSaveState) : null;
+          const next: ArchipelagoSaveState = {
+            config,
+            roomSeed: previous?.roomSeed,
+            slotNumber: previous?.slotNumber,
+            teamNumber: previous?.teamNumber,
+            slotData: previous?.slotData,
+            checkedLocations: previous?.checkedLocations ?? [],
+            receivedItems: previous?.receivedItems ?? [],
+            receivedItemIndex: previous?.receivedItemIndex ?? 0,
+            goalReached: previous?.goalReached ?? false,
+            updatedAt: Date.now(),
+          };
+          await tx.runAsync(
+            'INSERT INTO archipelago_state (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload',
+            JSON.stringify(next)
+          );
+        });
+        notify();
+      });
+    },
+    recordArchipelagoLocationChecks(locationIds: number[]): Promise<ArchipelagoSaveState | null> {
+      return enqueue(async () => {
+        let changed = false;
+        const result = await transaction(async tx => {
+          const row = await tx.getFirstAsync<{ payload: string }>('SELECT payload FROM archipelago_state WHERE id = 1');
+          const current = row ? (JSON.parse(row.payload) as ArchipelagoSaveState) : null;
+          if (!current) return null;
+          const existing = new Set(current.checkedLocations);
+          let modified = false;
+          for (const id of locationIds) {
+            if (!existing.has(id)) {
+              existing.add(id);
+              modified = true;
+            }
+          }
+          if (!modified) return current;
+          const next: ArchipelagoSaveState = {
+            ...current,
+            checkedLocations: Array.from(existing),
+            updatedAt: Date.now(),
+          };
+          changed = true;
+          await tx.runAsync(
+            'INSERT INTO archipelago_state (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload',
+            JSON.stringify(next)
+          );
+          return next;
+        });
+        if (changed) notify();
+        return result;
+      });
+    },
+    recordArchipelagoReceivedItems(items: Array<{ item: number; location: number; player: number; flags: number }>, nextIndex: number): Promise<ArchipelagoSaveState | null> {
+      return enqueue(async () => {
+        let changed = false;
+        const result = await transaction(async tx => {
+          const row = await tx.getFirstAsync<{ payload: string }>('SELECT payload FROM archipelago_state WHERE id = 1');
+          const current = row ? (JSON.parse(row.payload) as ArchipelagoSaveState) : null;
+          if (!current) return null;
+          const next: ArchipelagoSaveState = {
+            ...current,
+            receivedItems: [...current.receivedItems, ...items],
+            receivedItemIndex: Math.max(current.receivedItemIndex, nextIndex),
+            updatedAt: Date.now(),
+          };
+          changed = true;
+          await tx.runAsync(
+            'INSERT INTO archipelago_state (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload',
+            JSON.stringify(next)
+          );
+          return next;
+        });
+        if (changed) notify();
+        return result;
       });
     },
   };
