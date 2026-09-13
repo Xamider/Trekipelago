@@ -1,11 +1,13 @@
+import { generateDefenseLevel } from '../game/towerDefense';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { test, type TestContext } from 'node:test';
-import { applyLocations, collectOrb, createSave, DEFAULT_SOLO_CONFIG, rollSpawn, setTracking } from '../game/engine';
+import { beginTreasureChallenge, completeDefenseChallenge, completeTreasureChallenge, treasureProgress, getTreasureReward, isTreasureAvailable, removeTreasureBox, collectTreasureBox, spawnTreasures, applyLocations, collectOrb, createSave, DEFAULT_SOLO_CONFIG, rollSpawn, setTracking } from '../game/engine';
 import type { SoloSnapshot } from '../game/types';
 import { DEFAULT_PREFERENCES } from '../state/preferences';
 import type { SqlConnection, SqlDatabase, SqlValue } from './driver';
 import { createRepository } from './repository';
+import { TREASURE_HISTORY_LIMIT } from '../game/engine';
 
 const START = 1_000_000;
 const SESSION = 'original';
@@ -82,7 +84,7 @@ function saveWithOrb(session = SESSION, now = START): SoloSnapshot {
 test('an empty database migrates once and returns default preferences with no save', async t => {
   const { adapter, repository } = setup(t);
   assert.deepEqual(await repository.read(), { save: null, preferences: DEFAULT_PREFERENCES });
-  assert.equal(adapter.sqlite.prepare('PRAGMA user_version').get()?.user_version, 1);
+  assert.equal(adapter.sqlite.prepare('PRAGMA user_version').get()?.user_version, 2);
   assert.equal(adapter.sqlite.prepare('PRAGMA foreign_keys').get()?.foreign_keys, 1);
   assert.equal(adapter.sqlite.prepare('SELECT COUNT(*) AS total FROM solo_save').get()?.total, 0);
   const reopened = createRepository(async () => adapter);
@@ -285,9 +287,9 @@ test('non-lock write errors are returned immediately without retrying the transf
 
 test('newer save schemas are refused without modifying their version', async t => {
   const { adapter, repository } = setup(t);
-  adapter.sqlite.exec('PRAGMA user_version = 2');
+  adapter.sqlite.exec('PRAGMA user_version = 3');
   await assert.rejects(repository.read(), /newer version of Trekipelago/);
-  assert.equal(adapter.sqlite.prepare('PRAGMA user_version').get()?.user_version, 2);
+  assert.equal(adapter.sqlite.prepare('PRAGMA user_version').get()?.user_version, 3);
 });
 
 test('database initialization can recover from an initial open failure', async t => {
@@ -372,4 +374,195 @@ test('Archipelago state saves configuration, checks, received items, and restore
   const snapshot = await repository.read();
   assert.equal(snapshot.archipelago?.config.slotName, 'Explorer1');
   assert.equal(snapshot.archipelago?.receivedItems.length, 2);
+});
+
+
+test('treasure collection, history, deadline and replacement survive reopening atomically', async t => {
+  const { adapter, repository } = setup(t);
+  const original = spawnTreasures(saveWithOrb(), SESSION, START + 10_000, () => 0);
+  await repository.update(() => original);
+  await Promise.all([0, 1].map(() => repository.update(save => collectTreasureBox(save!, SESSION, original.treasures[0].id, START + 10_000, () => 0))));
+  const saved = (await createRepository(async () => adapter).read()).save!;
+  assert.equal(saved.treasures.filter(box => box.collectedAt !== undefined).length, 1);
+  assert.equal(saved.effects.length, 1);
+  assert.equal(saved.effects[0].expiresAt, START + 10_000 + 15 * 60_000);
+  assert.equal(saved.nextTreasureSpawnAt, original.nextTreasureSpawnAt);
+  adapter.statementHook = sql => { if (sql.startsWith('INSERT INTO treasures')) throw new Error('treasure write failed'); };
+  await assert.rejects(repository.update(save => collectTreasureBox(save!, SESSION, original.treasures[1].id, START + 10_000, () => 0)), /treasure write failed/);
+  adapter.statementHook = undefined;
+  assert.deepEqual((await repository.read()).save, saved);
+  await repository.update(save => collectTreasureBox(save!, SESSION, original.treasures[1].id, START + 10_000, () => 0));
+  assert.equal((await repository.read()).save!.treasures.length, 4);
+  await repository.update(() => createSave(DEFAULT_SOLO_CONFIG, 'replacement', START + 20_000));
+  assert.equal(adapter.sqlite.prepare('SELECT COUNT(*) AS total FROM treasures').get()?.total, 0);
+});
+
+test('version 1 saves gain an initial pending treasure batch without losing journey data', async t => {
+  const { adapter, repository } = setup(t);
+  const old = saveWithOrb();
+  await repository.update(() => old);
+  const { treasures, nextTreasureSpawnAt, treasureBatchSequence, ...legacy } = old;
+  delete legacy.config.treasureSpawnIntervalMinutes;
+  adapter.sqlite.prepare('UPDATE solo_save SET payload = ?').run(JSON.stringify(legacy));
+  adapter.sqlite.exec('DROP TABLE treasures; PRAGMA user_version = 1');
+  const migrated = (await createRepository(async () => adapter).read()).save!;
+  assert.deepEqual(migrated.treasures, []);
+  assert.equal(migrated.config.treasureSpawnIntervalMinutes, 30);
+  assert.equal(migrated.nextTreasureSpawnAt, old.createdAt);
+  assert.equal(migrated.distanceMeters, old.distanceMeters);
+  assert.equal(spawnTreasures(migrated, SESSION, START + 10_000, () => 0).treasures.length, 2);
+});
+
+
+test('removed treasures and refill blocking persist with their fixed rewards', async t => {
+  const { adapter, repository } = setup(t);
+  const original = spawnTreasures(saveWithOrb(), SESSION, START + 10000, () => 0);
+  await repository.update(() => original);
+  const [removed, remaining] = original.treasures;
+  await repository.update(save => removeTreasureBox(save!, SESSION, removed.id, START + 10001));
+  const reopened = createRepository(async () => adapter);
+  const saved = (await reopened.read()).save!;
+  assert.equal(saved.treasureRefillBlocked, true);
+  assert.equal(saved.treasures[0].removedAt, START + 10001);
+  assert.deepEqual(getTreasureReward(saved.treasures[1]), getTreasureReward(remaining));
+  await reopened.update(save => collectTreasureBox(save!, SESSION, remaining.id, START + 10002, () => 0));
+  const cleared = (await reopened.read()).save!;
+  assert.equal(cleared.treasures.filter(isTreasureAvailable).length, 0);
+  assert.equal(cleared.nextTreasureSpawnAt, original.nextTreasureSpawnAt);
+});
+
+
+test('labyrinth and reward limit survive reload and concurrent completion grants only once', async t => {
+  const { adapter, repository } = setup(t);
+  const original = spawnTreasures(saveWithOrb(), SESSION, START + 10000, () => 0);
+  original.config.maxTreasureRewards = 1;
+  await repository.update(() => beginTreasureChallenge(original, SESSION, original.treasures[0].id, START + 10000, () => 0));
+  const reopened = createRepository(async () => adapter);
+  const restored = (await reopened.read()).save!;
+  const challenge = restored.treasureChallenge!;
+  assert.ok(challenge);
+  assert.ok(challenge.kind !== 'tower_defense');
+  assert.equal(restored.config.maxTreasureRewards, 1);
+  const queue = [[0]];
+  const visited = new Set([0]);
+  let solution: number[] = [];
+  for (let i = 0; i < queue.length; i++) {
+    const path = queue[i];
+    const last = path[path.length - 1];
+    if (last === challenge.maze.size ** 2 - 1) { solution = path; break; }
+    for (const next of challenge.maze.passages[last]) {
+      if (!visited.has(next)) { visited.add(next); queue.push([...path, next]); }
+    }
+  }
+  assert.ok(solution.length > 1);
+  await Promise.all([0, 1].map(() => reopened.update(save => completeTreasureChallenge(save!, SESSION, challenge.id, solution, START + 10000, () => 0))));
+  const completed = (await repository.read()).save!;
+  assert.deepEqual(treasureProgress(completed), { collected: 1, rewarded: 1, limit: 1 });
+  assert.equal(completed.effects[0].expiresAt, START + 10000 + 15 * 60000);
+  assert.equal(completed.treasureChallenge, null);
+});
+
+
+test('tower defense persists its generated level and atomically awards one victory', async t => {
+  const { adapter, repository } = setup(t);
+  let original = spawnTreasures(saveWithOrb(), SESSION, START + 10000, () => 0);
+  let seed = 2;
+  original.treasures[0].minigame = { kind: 'tower_defense', defense: generateDefenseLevel(() => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; }) };
+  original = beginTreasureChallenge(original, SESSION, original.treasures[0].id, START + 10000, () => 0);
+  await repository.update(() => original);
+  const reopened = createRepository(async () => adapter);
+  const restored = (await reopened.read()).save!;
+  const challenge = restored.treasureChallenge!;
+  assert.ok(challenge.kind === 'tower_defense');
+  assert.deepEqual(challenge, original.treasureChallenge);
+  const towers = [59, 3].map(cell => ({ cell, type: 'sniper' as const }));
+  adapter.statementHook = sql => { if (sql.startsWith('INSERT INTO treasures')) throw new Error('defense collection failed'); };
+  await assert.rejects(reopened.update(save => completeDefenseChallenge(save!, SESSION, challenge.id, towers, START + 10000, () => 0)), /defense collection failed/);
+  adapter.statementHook = undefined;
+  assert.deepEqual((await reopened.read()).save, restored);
+  await Promise.all([0, 1].map(() => reopened.update(save => completeDefenseChallenge(save!, SESSION, challenge.id, towers, START + 10000, () => 0))));
+  const completed = (await repository.read()).save!;
+  assert.equal(treasureProgress(completed).collected, 1);
+  assert.equal(treasureProgress(completed).rewarded, 1);
+  assert.equal(completed.treasureChallenge, null);
+});
+
+
+test('legacy boxes receive persisted minigames once and preserve an active challenge layout', async t => {
+  const { adapter, repository } = setup(t);
+  const original = spawnTreasures(saveWithOrb(), SESSION, START + 10000, () => 0);
+  const started = beginTreasureChallenge(original, SESSION, original.treasures[0].id, START + 10000, () => 0);
+  await repository.update(() => started);
+  for (const box of started.treasures) {
+    const { minigame, ...legacy } = box;
+    adapter.sqlite.prepare('UPDATE treasures SET payload = ? WHERE id = ?').run(JSON.stringify(legacy), box.id);
+  }
+  const restored = (await createRepository(async () => adapter).read()).save!;
+  const active = restored.treasureChallenge!;
+  assert.ok(active.kind !== 'tower_defense');
+  assert.deepEqual(restored.treasures[0].minigame, { kind: 'maze', maze: active.maze });
+  assert.ok(restored.treasures[1].minigame);
+  for (const box of restored.treasures) {
+    const stored = adapter.sqlite.prepare('SELECT payload FROM treasures WHERE id = ?').get(box.id) as { payload: string };
+    assert.deepEqual(JSON.parse(stored.payload).minigame, box.minigame);
+  }
+  assert.deepEqual((await repository.read()).save!.treasures, restored.treasures);
+});
+
+test('treasure diffing ignores key order and unchanged layouts but persists real changes', async t => {
+  const { adapter, repository } = setup(t);
+  const original = spawnTreasures(saveWithOrb(), SESSION, START + 10000, () => 0);
+  await repository.update(() => original);
+  let treasureWrites = 0;
+  adapter.statementHook = sql => { if (sql.startsWith('INSERT INTO treasures')) treasureWrites++; };
+  await repository.update(save => ({ ...save!, distanceMeters: 5 }));
+  await repository.update(save => ({ ...save!, treasures: save!.treasures.map(box =>
+    JSON.parse(JSON.stringify(box), (_key, value) => value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).reverse()) : value)) }));
+  assert.equal(treasureWrites, 0, 'GPS updates and rebuilt equal objects must not rewrite treasure layouts');
+  await repository.update(save => ({ ...save!, treasures: save!.treasures.map((box, index) => index ? box
+    : { ...box, reward: { type: 'speed_up', durationMs: 123000 } }) }));
+  assert.equal(treasureWrites, 1);
+  await repository.update(save => ({ ...save!, treasures: save!.treasures.map((box, index) => index ? box
+    : { ...box, minigame: { kind: 'tower_defense', defense: generateDefenseLevel(() => 0.9) } }) }));
+  assert.equal(treasureWrites, 2);
+  await repository.update(save => removeTreasureBox(save!, SESSION, original.treasures[0].id, START + 10001));
+  assert.equal(treasureWrites, 3);
+  const restored = (await createRepository(async () => adapter).read()).save!;
+  assert.deepEqual(restored.treasures[0].reward, { type: 'speed_up', durationMs: 123000 });
+  assert.equal(restored.treasures[0].minigame?.kind, 'tower_defense');
+  assert.equal(restored.treasures[0].removedAt, START + 10001);
+});
+
+test('legacy history compaction persists counters and row deletions atomically across reloads', async t => {
+  const { adapter, repository } = setup(t);
+  const original = spawnTreasures(saveWithOrb(), SESSION, START + 10000, () => 0);
+  await repository.update(() => original);
+  for (let i = 0; i < 120; i++) {
+    const box = { ...original.treasures[0], id: `legacy-${i}`,
+      ...(i % 3 === 0 ? { removedAt: START + i }
+        : { collectedAt: START + i, ...(i % 3 === 1 ? { rewardGranted: false } : {}) }) };
+    adapter.sqlite.prepare('INSERT INTO treasures (id, payload) VALUES (?, ?)').run(box.id, JSON.stringify(box));
+  }
+  const rootBefore = adapter.sqlite.prepare('SELECT payload FROM solo_save').get();
+  adapter.statementHook = sql => { if (sql.startsWith('DELETE FROM treasures')) throw new Error('Pruning failed'); };
+  await assert.rejects(repository.read(), /Pruning failed/);
+  adapter.statementHook = undefined;
+  assert.deepEqual(adapter.sqlite.prepare('SELECT payload FROM solo_save').get(), rootBefore);
+  assert.equal(adapter.sqlite.prepare('SELECT COUNT(*) AS total FROM treasures').get()?.total, 122);
+
+  const migrated = (await repository.read()).save!;
+  assert.equal(migrated.treasures.length, TREASURE_HISTORY_LIMIT + 2);
+  assert.deepEqual(treasureProgress(migrated), { collected: 80, rewarded: 40, limit: 10 });
+  assert.deepEqual(migrated.treasures.filter(isTreasureAvailable), original.treasures);
+  assert.equal(migrated.nextTreasureSpawnAt, original.nextTreasureSpawnAt);
+  assert.equal(adapter.sqlite.prepare('SELECT COUNT(*) AS total FROM treasures').get()?.total, TREASURE_HISTORY_LIMIT + 2);
+  const reopened = createRepository(async () => adapter);
+  assert.deepEqual((await reopened.read()).save, migrated, 'Reloading cannot archive the same boxes twice');
+  const next = await reopened.update(save => collectTreasureBox(save!, SESSION, original.treasures[0].id, START + 10001));
+  assert.deepEqual(treasureProgress(next!), { collected: 81, rewarded: 40, limit: 10 });
+  assert.deepEqual(next!.effects, [], 'Archived rewards must still count against the item cap');
+  assert.deepEqual((await repository.read()).save, next);
+  await repository.update(() => createSave(DEFAULT_SOLO_CONFIG, 'new-session', START + 20000));
+  assert.deepEqual(treasureProgress((await repository.read()).save!), { collected: 0, rewarded: 0, limit: 10 });
 });

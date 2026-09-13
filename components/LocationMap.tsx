@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { useEffect, useRef, useState, type ComponentRef } from 'react';
+import { PixelRatio, StyleSheet, View } from 'react-native';
 import MapView, { Circle, Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import { useIsFocused } from '@react-navigation/native';
 
-import type { Orb } from '../game/types';
+import { Feather } from '@expo/vector-icons';
+import { isTreasureAvailable } from '../game/engine';
+import type { Orb, TreasureBox } from '../game/types';
 import type { AppPreferences } from '../state/preferences';
 import { theme } from '../theme';
 import type { Coordinates, PointOfInterest } from '../types';
@@ -34,6 +37,8 @@ type LocationMapProps = {
   location: Coordinates;
   radiusMeters: number;
   orbs: Orb[];
+  treasures: TreasureBox[];
+  onSelectTreasureBox: (id: string, anchor: { x: number; y: number }) => void;
   mapStyle: AppPreferences['mapStyle'];
   pointsOfInterest: PointOfInterest[];
   canCollect: boolean;
@@ -43,33 +48,41 @@ type LocationMapProps = {
 
 function MapPoint({ coordinate, icon, title, description, onPress }: {
   coordinate: Coordinates;
-  icon: 'amber' | 'cyan' | 'orb';
+  icon: 'amber' | 'cyan' | 'orb' | 'treasure';
   title?: string;
   description?: string;
   onPress?: () => void;
 }) {
+  const marker = useRef<ComponentRef<typeof Marker>>(null);
+  const [laidOut, setLaidOut] = useState(false);
   const [tracksViewChanges, setTracksViewChanges] = useState(true);
 
   useEffect(() => {
-    const timer = setTimeout(() => setTracksViewChanges(false), 300);
+    if (!laidOut) return;
+    const timer = setTimeout(() => {
+      marker.current?.redraw();
+      setTracksViewChanges(false);
+    }, 300);
     return () => clearTimeout(timer);
-  }, []);
+  }, [laidOut]);
 
   return (
     <Marker
+      ref={marker}
       coordinate={coordinate}
       title={title}
       description={description}
       anchor={{ x: 0.5, y: 0.5 }}
       tracksViewChanges={tracksViewChanges}
-      zIndex={icon === 'orb' ? 3 : 1}
+      zIndex={icon === 'treasure' ? 4 : icon === 'orb' ? 3 : 1}
       stopPropagation={true}
       onPress={onPress}
-      accessibilityLabel={icon === 'orb' ? 'Collect light orb' : title}
-      accessibilityRole={icon === 'orb' ? 'button' : undefined}
+      accessibilityLabel={icon === 'treasure' ? 'Treasure box options' : icon === 'orb' ? 'Collect light orb' : title}
+      accessibilityRole={onPress ? 'button' : undefined}
     >
-      <View collapsable={false} style={icon === 'orb' ? styles.orbTarget : styles.poiTarget}>
-        {icon === 'orb' ? (
+      <View collapsable={false} onLayout={() => setLaidOut(true)}
+        style={icon === 'orb' || icon === 'treasure' ? styles.orbTarget : styles.poiTarget}>
+        {icon === 'treasure' ? (<View style={styles.treasure}><Feather name="package" size={24} color="#fbbf24" /></View>) : icon === 'orb' ? (
           <View style={styles.orbDisc}>
             <View style={styles.orbCore} />
           </View>
@@ -82,8 +95,12 @@ function MapPoint({ coordinate, icon, title, description, onPress }: {
 }
 
 export function LocationMap({ location, radiusMeters, orbs, mapStyle, pointsOfInterest,
-  recenterVersion, onCollectOrb }: LocationMapProps) {
+  recenterVersion, onCollectOrb, treasures, onSelectTreasureBox }: LocationMapProps) {
   const map = useRef<MapView>(null);
+  const focused = useIsFocused();
+  const currentInteraction = useRef({ focused, treasures, onSelectTreasureBox });
+  currentInteraction.current = { focused, treasures, onSelectTreasureBox };
+  const lastHoldAt = useRef(0);
   const following = useRef(true);
   const latestCenter = useRef(location);
   latestCenter.current = location;
@@ -115,6 +132,28 @@ export function LocationMap({ location, radiusMeters, orbs, mapStyle, pointsOfIn
       moveOnMarkerPress={false}
       mapPadding={{ top: 220, right: 16, bottom: 50, left: 16 }}
       onMapReady={() => setReady(true)}
+      onLongPress={event => {
+        const position = event.nativeEvent.position;
+        const nativeMap = map.current;
+        if (!nativeMap) return;
+        // Android marker children are bitmaps, so use the map's native long-press
+        // event and hit-test projected marker centres in screen pixels.
+        lastHoldAt.current = Date.now();
+        void Promise.all(treasures.filter(isTreasureAvailable).map(async box => ({
+          id: box.id, point: await nativeMap.pointForCoordinate(box),
+        }))).then(points => {
+          if (!currentInteraction.current.focused || map.current !== nativeMap) return;
+          const hit = points.map(({ id, point }) => ({ id, point,
+            distance: Math.hypot(point.x - position.x / PixelRatio.get(), point.y - position.y / PixelRatio.get()),
+          })).filter(point => point.distance <= 24
+            && currentInteraction.current.treasures.some(box => box.id === point.id && isTreasureAvailable(box)))
+            .sort((a, b) => a.distance - b.distance)[0];
+          if (hit) {
+            following.current = false;
+            currentInteraction.current.onSelectTreasureBox(hit.id, hit.point);
+          }
+        }).catch(() => { /* The native map may have detached during navigation. */ });
+      }}
       onPanDrag={() => { following.current = false; }}
       onRegionChangeComplete={(_, detail) => { if (detail.isGesture) following.current = false; }}
       scrollEnabled
@@ -140,7 +179,9 @@ export function LocationMap({ location, radiusMeters, orbs, mapStyle, pointsOfIn
       >
         <View collapsable={false} style={styles.beaconHalo}><View style={styles.beacon} /></View>
       </Marker>
-      {pointsOfInterest.map((point) => (
+      {/* Reattach custom native markers after navigation, once the map is ready.
+          Android can lose their cached bitmaps when a screen is detached. */}
+      {ready && focused && pointsOfInterest.map((point) => (
         <MapPoint
           key={point.id}
           coordinate={point.coordinates}
@@ -149,7 +190,21 @@ export function LocationMap({ location, radiusMeters, orbs, mapStyle, pointsOfIn
           icon={point.snippet.includes('cafe') ? 'cyan' : 'amber'}
         />
       ))}
-      {orbs.map((orb) => (
+      {ready && focused && treasures.filter(isTreasureAvailable).map(box => (
+        <MapPoint key={box.id} coordinate={box} icon="treasure"
+          onPress={() => {
+            const nativeMap = map.current;
+            if (!nativeMap || Date.now() - lastHoldAt.current <= 500) return;
+            following.current = false;
+            void nativeMap.pointForCoordinate(box).then(point => {
+              if (map.current === nativeMap && currentInteraction.current.focused
+                && currentInteraction.current.treasures.some(candidate => candidate.id === box.id && isTreasureAvailable(candidate))) {
+                currentInteraction.current.onSelectTreasureBox(box.id, point);
+              }
+            }).catch(() => { /* Map detached before the marker could be projected. */ });
+          }} />
+      ))}
+      {ready && focused && orbs.map((orb) => (
         <MapPoint
           key={orb.id}
           coordinate={orb}
@@ -163,6 +218,7 @@ export function LocationMap({ location, radiusMeters, orbs, mapStyle, pointsOfIn
 
 const styles = StyleSheet.create({
   map: { flex: 1 },
+  treasure: { width: 36, height: 36, borderRadius: 8, backgroundColor: '#30230c', borderWidth: 2, borderColor: '#fbbf24', alignItems: 'center', justifyContent: 'center' },
   beaconHalo: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(112,244,11,0.3)', alignItems: 'center', justifyContent: 'center' },
   beacon: { width: 20, height: 20, borderRadius: 10, backgroundColor: theme.colors.primary },
   orbTarget: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },

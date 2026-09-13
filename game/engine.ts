@@ -1,6 +1,10 @@
-import type { ActiveEffect, ActivityEntry, EventItem, ItemType, LocationSample, Orb, SoloConfig, SoloSnapshot } from './types';
+import type { ActiveEffect, ActivityEntry, EventItem, ItemType, LocationSample, Orb, SoloConfig, SoloSnapshot, TreasureBox } from './types';
+import { generateMaze, isMazeSolution, type TreasureMinigame, type TreasureChallenge } from './maze';
+import { generateDefenseLevel, simulateDefense, type TowerPlacement } from './towerDefense';
 
 export const DEFAULT_SOLO_CONFIG: Readonly<SoloConfig> = Object.freeze({
+  maxTreasureRewards: 10,
+  treasureSpawnIntervalMinutes: 30,
   radiusMeters: 100,
   baseChance: 0.2,
   maxDistanceMeters: 5000,
@@ -14,6 +18,11 @@ export const DEFAULT_SOLO_CONFIG: Readonly<SoloConfig> = Object.freeze({
 
 export const SPAWN_INTERVAL_MS = 10_000;
 export const FRESH_FIX_MS = 30_000;
+export const TREASURE_DESTINATION_RADIUS_METERS = 2000;
+// Temporary testing override. Set to null to restore the destination's 2 km distribution.
+export const TREASURE_TEST_RADIUS_METERS: number | null = null;
+export const TREASURE_HISTORY_LIMIT = 100;
+export const TREASURE_REWARD_DURATIONS_MS = [15 * 60_000, 30 * 60_000] as const;
 const EARTH_RADIUS_METERS = 6_371_000;
 const MAX_ACCURACY_METERS = 2000;
 
@@ -278,6 +287,13 @@ const degrees = (angle: number) => angle * 180 / Math.PI;
 type Coordinates = Pick<LocationSample, 'latitude' | 'longitude'>;
 
 export function validateConfig(config: SoloConfig): string | null {
+  if (!Number.isSafeInteger(config.maxTreasureRewards ?? 10) || (config.maxTreasureRewards ?? 10) < 0) {
+    return 'Treasure reward limit must be a non-negative whole number.';
+  }
+  const minutes = config.treasureSpawnIntervalMinutes ?? 30;
+  if (!Number.isSafeInteger(minutes) || minutes <= 0 || !Number.isSafeInteger(minutes * 60_000)) {
+    return 'Treasure interval must be a positive whole number of minutes.';
+  }
   if (!Number.isFinite(config.radiusMeters) || config.radiusMeters <= 0) {
     return 'Region radius must be a positive number.';
   }
@@ -459,6 +475,9 @@ export function createSave(config: SoloConfig, sessionId: string, now: number): 
 
   return addActivity({
     sessionId,
+    treasures: [],
+    nextTreasureSpawnAt: now,
+    treasureBatchSequence: 0,
     config: { ...config, maxOrbs },
     tracking: true,
     createdAt: now,
@@ -491,6 +510,7 @@ export function setTracking(save: SoloSnapshot, tracking: boolean, newSessionId:
   return addActivity({
     ...save,
     sessionId: newSessionId,
+    treasureChallenge: null,
     tracking,
     updatedAt: now,
     lastFix: null,
@@ -526,7 +546,7 @@ function validFix(fix: LocationSample, now: number): boolean {
     && Number.isFinite(fix.timestamp) && fix.timestamp >= 0 && fix.timestamp <= now + 30000;
 }
 
-export function isFreshFix(save: SoloSnapshot, now: number): boolean {
+export function isFreshFix(save: SoloSnapshot, now = Date.now()): boolean {
   return save.lastFix !== null && validFix(save.lastFix, now) && now >= save.lastFix.timestamp && now - save.lastFix.timestamp <= FRESH_FIX_MS;
 }
 
@@ -535,6 +555,7 @@ function recoverFromClockRollback(save: SoloSnapshot, now: number): SoloSnapshot
   if (now >= save.updatedAt) return save;
   return {
     ...save,
+    nextTreasureSpawnAt: now + Math.max(0, save.nextTreasureSpawnAt - save.updatedAt),
     lastFix: null,
     distanceAnchor: null,
     lastProcessedTimestamp: now - 1,
@@ -723,6 +744,10 @@ function spawnPosition(center: LocationSample, radiusMeters: number, random: () 
   const angularRadius = Math.min(Math.PI, radiusMeters / EARTH_RADIUS_METERS);
   const angularDistance = 2 * Math.asin(Math.sqrt(randomFraction(random)) * Math.sin(angularRadius / 2));
   const bearing = 2 * Math.PI * randomFraction(random);
+  return positionAtDistance(center, angularDistance, bearing);
+}
+
+function positionAtDistance(center: Coordinates, angularDistance: number, bearing: number): Coordinates {
   const latitude = radians(center.latitude);
   const longitude = radians(center.longitude);
   const resultLatitude = Math.asin(Math.max(-1, Math.min(1,
@@ -792,6 +817,212 @@ export function rollSpawn(save: SoloSnapshot, sessionId: string, now: number, fo
     ...next,
     orbs: [...next.orbs, ...spawnedOrbs],
   }, "spawn", msg, now);
+}
+
+// Relative probability per metre, not cumulative chances inside each radius.
+// Keep the near-player weight flat, peak at 1 km, then drop to a rare outer tail.
+const TREASURE_DISTANCE_WEIGHTS = [
+  { from: 0, to: 100, start: 0.10, end: 0.10 },
+  { from: 100, to: 500, start: 0.10, end: 0.40 },
+  { from: 500, to: 1000, start: 0.40, end: 0.75 },
+  { from: 1000, to: 2000, start: 0.10, end: 0.01 },
+] as const;
+
+export function sampleTreasureDistance(random: () => number): number {
+  const totalWeight = TREASURE_DISTANCE_WEIGHTS.reduce((sum, band) =>
+    sum + (band.to - band.from) * (band.start + band.end) / 2, 0);
+  let area = randomFraction(random) * totalWeight;
+  for (const band of TREASURE_DISTANCE_WEIGHTS) {
+    const width = band.to - band.from;
+    const bandArea = width * (band.start + band.end) / 2;
+    if (area < bandArea) {
+      const slope = (band.end - band.start) / width;
+      // Invert the integrated linear density without rejection loops or cancellation.
+      const offset = 2 * area / (band.start + Math.sqrt(band.start ** 2 + 2 * slope * area));
+      return band.from + Math.min(width, offset);
+    }
+    area -= bandArea;
+  }
+  return 2000;
+}
+
+export function isTreasureAvailable(box: TreasureBox): boolean {
+  return box.collectedAt === undefined && box.removedAt === undefined;
+}
+
+export function treasureProgress(save: SoloSnapshot): { collected: number; rewarded: number; limit: number } {
+  const collected = save.treasures.filter(box => box.collectedAt !== undefined);
+  return { collected: (save.archivedTreasureCollected ?? 0) + collected.length,
+    rewarded: (save.archivedTreasureRewarded ?? 0) + collected.filter(box => box.rewardGranted !== false).length,
+    limit: save.config.maxTreasureRewards ?? 10 };
+}
+
+/** Keep all available boxes and the most recently resolved history, preserving reward caps. */
+export function compactTreasureHistory(save: SoloSnapshot, latestResolvedId?: string): SoloSnapshot {
+  const resolved = save.treasures.filter(box => !isTreasureAvailable(box));
+  if (resolved.length <= TREASURE_HISTORY_LIMIT) return save;
+  // Keep the action result visible to its caller even after a clock rollback
+  // makes older history timestamps appear newer than this collection/removal.
+  resolved.sort((a, b) => Number(b.id === latestResolvedId) - Number(a.id === latestResolvedId)
+    || Math.max(b.collectedAt ?? 0, b.removedAt ?? 0) - Math.max(a.collectedAt ?? 0, a.removedAt ?? 0));
+  const discarded = new Set(resolved.slice(TREASURE_HISTORY_LIMIT).map(box => box.id));
+  let collected = save.archivedTreasureCollected ?? 0;
+  let rewarded = save.archivedTreasureRewarded ?? 0;
+  const treasures = save.treasures.filter(box => {
+    if (!discarded.has(box.id)) return true;
+    if (box.collectedAt !== undefined) {
+      collected++;
+      if (box.rewardGranted !== false) rewarded++;
+    }
+    return false;
+  });
+  return { ...save, treasures, archivedTreasureCollected: collected, archivedTreasureRewarded: rewarded };
+}
+
+export function canOpenTreasure(save: SoloSnapshot, sessionId: string, id: string, now: number): boolean {
+  const box = save.treasures.find(box => box.id === id && isTreasureAvailable(box));
+  return !!(save.tracking && save.sessionId === sessionId && isFreshFix(save, now) && save.lastFix
+    && box && distanceBetween(save.lastFix, box) <= save.config.radiusMeters);
+}
+
+export function beginTreasureChallenge(save: SoloSnapshot, sessionId: string, id: string, now: number,
+  random: () => number = Math.random): SoloSnapshot {
+  if (!canOpenTreasure(save, sessionId, id, now)) return save;
+  const box = save.treasures.find(box => box.id === id)!;
+  const previous = save.treasureChallenge;
+  const minigame = getTreasureMinigame(box, previous);
+  if (previous?.treasureId === id && previous.sessionId === sessionId && (previous.kind ?? 'maze') === minigame.kind) return save;
+  return { ...save, updatedAt: now,
+    treasures: save.treasures.map(box => box.id === id ? { ...box, minigame } : box), treasureChallenge: {
+    id: `${sessionId}:${minigame.kind}:${now}:${randomFraction(random).toString(36).slice(2)}`,
+    sessionId, treasureId: id, ...minigame,
+  } };
+}
+
+export function generateTreasureMinigame(random: () => number): TreasureMinigame {
+  return randomFraction(random) < 0.5 ? { kind: 'maze', maze: generateMaze(random) }
+    : { kind: 'tower_defense', defense: generateDefenseLevel(random) };
+}
+
+/** Existing boxes retain an active game or receive a stable randomized assignment. */
+export function getTreasureMinigame(box: TreasureBox, active?: TreasureChallenge | null): TreasureMinigame {
+  if (box.minigame) return box.minigame;
+  if (active?.treasureId === box.id) return active.kind === 'tower_defense'
+    ? { kind: 'tower_defense', defense: active.defense } : { kind: 'maze', maze: active.maze };
+  let seed = 2166136261;
+  const key = `minigame:${box.id}`;
+  for (let i = 0; i < key.length; i++) seed = Math.imul(seed ^ key.charCodeAt(i), 16777619);
+  return generateTreasureMinigame(() => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  });
+}
+
+export function completeTreasureChallenge(save: SoloSnapshot, sessionId: string, challengeId: string,
+  path: readonly number[], now: number, random: () => number = Math.random): SoloSnapshot {
+  const challenge = save.treasureChallenge;
+  if (!challenge || challenge.kind === 'tower_defense' || challenge.id !== challengeId || challenge.sessionId !== sessionId
+    || !isMazeSolution(challenge.maze, path)) return save;
+  const next = collectTreasureBox(save, sessionId, challenge.treasureId, now, random);
+  return next === save ? save : { ...next, treasureChallenge: null };
+}
+
+export function completeDefenseChallenge(save: SoloSnapshot, sessionId: string, challengeId: string,
+  towers: readonly TowerPlacement[], now: number, random: () => number = Math.random): SoloSnapshot {
+  const challenge = save.treasureChallenge;
+  if (!challenge || challenge.kind !== 'tower_defense' || challenge.id !== challengeId || challenge.sessionId !== sessionId
+    || !canOpenTreasure(save, sessionId, challenge.treasureId, now)
+    || simulateDefense(challenge.defense, towers).status !== 'won') return save;
+  const next = collectTreasureBox(save, sessionId, challenge.treasureId, now, random);
+  return next === save ? save : { ...next, treasureChallenge: null };
+}
+
+function rollTreasureReward(random: () => number): EventItem {
+  return { type: rollWeightedItem(random, 1), durationMs: TREASURE_REWARD_DURATIONS_MS[randomFraction(random) < 0.5 ? 0 : 1] };
+}
+
+/** Older boxes get a stable reward from their ID, including across app restarts. */
+export function getTreasureReward(box: TreasureBox): EventItem {
+  if (box.reward) return box.reward;
+  let seed = 2166136261;
+  for (let i = 0; i < box.id.length; i++) seed = Math.imul(seed ^ box.id.charCodeAt(i), 16777619);
+  return rollTreasureReward(() => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  });
+}
+
+/** Discarding a box gives no reward and keeps the scheduled spawn deadline. */
+export function removeTreasureBox(save: SoloSnapshot, sessionId: string, id: string, now: number): SoloSnapshot {
+  if (save.sessionId !== sessionId || !save.treasures.some(box => box.id === id && isTreasureAvailable(box))) return save;
+  return compactTreasureHistory(addActivity({ ...save, updatedAt: now, treasureRefillBlocked: true,
+    treasures: save.treasures.map(box => box.id === id ? { ...box, removedAt: now } : box),
+  }, 'game', 'Treasure box removed without collecting its reward.', now), id);
+}
+
+/** Treasure deadlines run independently of the foreground-only orb clock. */
+export function spawnTreasures(save: SoloSnapshot, sessionId: string, now: number, random: () => number): SoloSnapshot {
+  if (!save.tracking || save.sessionId !== sessionId) return save;
+  const next = recoverFromClockRollback(save, now);
+  if (now < next.nextTreasureSpawnAt || !isFreshFix(next, now) || !next.lastFix) return next;
+  const sequence = next.treasureBatchSequence + 1;
+  const count = randomFraction(random) < 0.5 ? 2 : 3;
+  const boxes = Array.from({ length: count }, (_, index) => ({
+    id: `${next.sessionId}:treasure:${sequence}:${index}`,
+    ...positionAtDistance(next.lastFix!, (sampleTreasureDistance(random)
+      * (TREASURE_TEST_RADIUS_METERS ?? TREASURE_DESTINATION_RADIUS_METERS) / TREASURE_DESTINATION_RADIUS_METERS) / EARTH_RADIUS_METERS,
+      randomFraction(random) * 2 * Math.PI),
+    spawnedAt: now,
+    reward: rollTreasureReward(random),
+    minigame: generateTreasureMinigame(random),
+  }));
+  return compactTreasureHistory(addActivity({
+    ...next,
+    treasures: [...next.treasures, ...boxes],
+    treasureBatchSequence: sequence,
+    treasureRefillBlocked: false,
+    nextTreasureSpawnAt: now + (next.config.treasureSpawnIntervalMinutes ?? 30) * 60_000,
+    updatedAt: now,
+  }, 'spawn', `${count} treasure boxes appeared nearby.`, now));
+}
+
+/** Locked background tracking may position treasures, but cannot earn movement rewards. */
+export function processLocations(save: SoloSnapshot, sessionId: string, fixes: LocationSample[], now: number,
+  maxSpeedLevel = 0, background = false, random: () => number = Math.random): SoloSnapshot {
+  if (!save.tracking || save.sessionId !== sessionId) return save;
+  let next: SoloSnapshot;
+  if (background && !save.backgroundUnlocked) {
+    next = recoverFromClockRollback(save, now);
+    for (const fix of [...fixes].sort((a, b) => a.timestamp - b.timestamp)) {
+      if (!validFix(fix, now) || fix.timestamp <= next.lastProcessedTimestamp) continue;
+      next = { ...next, lastFix: { ...fix }, lastProcessedTimestamp: fix.timestamp,
+        distanceAnchor: null, updatedAt: now };
+    }
+  } else {
+    next = applyLocations(save, sessionId, fixes, now, maxSpeedLevel);
+  }
+  return spawnTreasures(next, sessionId, now, random);
+}
+
+export function collectTreasureBox(save: SoloSnapshot, sessionId: string, id: string, now: number,
+  random: () => number = Math.random): SoloSnapshot {
+  if (!save.tracking || save.sessionId !== sessionId || !isFreshFix(save, now) || !save.lastFix) return save;
+  const box = save.treasures.find(box => box.id === id && isTreasureAvailable(box));
+  if (!box || distanceBetween(save.lastFix, box) > save.config.radiusMeters) return save;
+  let next = cleanupEffects(save, now);
+  const progress = treasureProgress(next);
+  const rewardGranted = progress.rewarded < progress.limit;
+  const item = rewardGranted ? getTreasureReward(box) : undefined;
+  const applied = item ? applyEffectOrOpposite(next.effects, item, now)
+    : { effects: next.effects, message: 'Treasure reward limit reached. No item awarded.' };
+  next = addActivity({ ...next, effects: applied.effects, updatedAt: now,
+    treasures: next.treasures.map(candidate => candidate.id === id ? { ...candidate, collectedAt: now, rewardGranted } : candidate),
+  }, item ? 'event' : 'collection', `Treasure collected! ${applied.message}`, now, item);
+  next = compactTreasureHistory(next, id);
+  if (!next.treasureRefillBlocked && !next.treasures.some(isTreasureAvailable)) {
+    next = spawnTreasures({ ...next, nextTreasureSpawnAt: now }, sessionId, now, random);
+  }
+  return next;
 }
 
 export function collectOrb(save: SoloSnapshot, sessionId: string, orbId: string, now: number): SoloSnapshot {

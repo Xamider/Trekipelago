@@ -1,9 +1,9 @@
-import { DEFAULT_SOLO_CONFIG } from '../game/engine';
-import type { ActivityEntry, Orb, SoloSnapshot } from '../game/types';
+import { compactTreasureHistory, DEFAULT_SOLO_CONFIG, getTreasureMinigame, isTreasureAvailable } from '../game/engine';
+import type { ActivityEntry, Orb, SoloSnapshot, TreasureBox } from '../game/types';
 import { DEFAULT_PREFERENCES, validatePreferences, type AppPreferences } from '../state/preferences';
 import type { SqlConnection, SqlDatabase } from './driver';
 
-type StoredSave = Omit<SoloSnapshot, 'orbs' | 'activity'>;
+type StoredSave = Omit<SoloSnapshot, 'orbs' | 'activity' | 'treasures'>;
 
 export interface ArchipelagoConfig {
   host: string;
@@ -59,6 +59,28 @@ const SCHEMA = `
 
 const delay = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
+function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
+  return a === b || (a.length === b.length && a.every((value, index) => value === b[index]));
+}
+
+function sameTreasure(a: TreasureBox | undefined, b: TreasureBox): boolean {
+  if (a === b) return true;
+  if (!a || a.id !== b.id || a.latitude !== b.latitude || a.longitude !== b.longitude
+    || a.spawnedAt !== b.spawnedAt || a.collectedAt !== b.collectedAt || a.removedAt !== b.removedAt
+    || a.rewardGranted !== b.rewardGranted || a.reward?.type !== b.reward?.type
+    || a.reward?.durationMs !== b.reward?.durationMs) return false;
+  const first = a.minigame;
+  const second = b.minigame;
+  if (first === second) return true;
+  if (first?.kind === 'maze' && second?.kind === 'maze') {
+    return first.maze.size === second.maze.size && first.maze.passages.length === second.maze.passages.length
+      && first.maze.passages.every((row, index) => sameNumbers(row, second.maze.passages[index]));
+  }
+  return first?.kind === 'tower_defense' && second?.kind === 'tower_defense'
+    && first.defense.size === second.defense.size && first.defense.enemyCount === second.defense.enemyCount
+    && sameNumbers(first.defense.path, second.defense.path);
+}
+
 export function createRepository(open: () => Promise<SqlDatabase>) {
   let ready: Promise<SqlDatabase> | undefined;
   let tail: Promise<unknown> = Promise.resolve();
@@ -81,8 +103,12 @@ export function createRepository(open: () => Promise<SqlDatabase>) {
         await retryLocked(() => db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;'));
         await retryLocked(() => db.withExclusiveTransactionAsync(async tx => {
           const version = await tx.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
-          if ((version?.user_version ?? 0) > 1) throw new Error('This save needs a newer version of Trekipelago.');
+          if ((version?.user_version ?? 0) > 2) throw new Error('This save needs a newer version of Trekipelago.');
           if (!version?.user_version) await tx.execAsync(SCHEMA);
+          await tx.execAsync(`CREATE TABLE IF NOT EXISTS treasures (
+            id TEXT PRIMARY KEY, save_id INTEGER NOT NULL DEFAULT 1 REFERENCES solo_save(id) ON DELETE CASCADE,
+            payload TEXT NOT NULL
+          ); PRAGMA user_version = 2;`);
           // Ensure archipelago_state table exists even on existing databases at version 1
           await tx.execAsync('CREATE TABLE IF NOT EXISTS archipelago_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL);');
         }));
@@ -122,14 +148,38 @@ export function createRepository(open: () => Promise<SqlDatabase>) {
         saved.config.recoveryDistanceMeters = DEFAULT_SOLO_CONFIG.recoveryDistanceMeters;
       }
     }
+    saved.config.treasureSpawnIntervalMinutes ??= 30;
+    saved.nextTreasureSpawnAt ??= saved.createdAt;
+    saved.treasureBatchSequence ??= 0;
+    const treasures = await tx.getAllAsync<{ payload: string }>('SELECT payload FROM treasures ORDER BY rowid');
+    const boxes = treasures.map(row => JSON.parse(row.payload) as TreasureBox);
+    for (const box of boxes) {
+      if (!box.minigame && isTreasureAvailable(box)) {
+        box.minigame = getTreasureMinigame(box, saved.treasureChallenge);
+        await tx.runAsync('UPDATE treasures SET payload = ? WHERE id = ?', JSON.stringify(box), box.id);
+      }
+    }
     const orbs = await tx.getAllAsync<{ payload: string }>('SELECT payload FROM orbs ORDER BY rowid');
     const activity = await tx.getAllAsync<{ payload: string }>('SELECT payload FROM activity ORDER BY position');
-    return { ...saved, orbs: orbs.map(row => JSON.parse(row.payload) as Orb), activity: activity.map(row => JSON.parse(row.payload) as ActivityEntry) };
+    const snapshot = { ...saved, treasures: boxes, orbs: orbs.map(row => JSON.parse(row.payload) as Orb), activity: activity.map(row => JSON.parse(row.payload) as ActivityEntry) };
+    const compacted = compactTreasureHistory(snapshot);
+    if (compacted !== snapshot) await writeSave(tx, snapshot, compacted);
+    return compacted;
   }
 
   async function writeSave(tx: SqlConnection, previous: SoloSnapshot | null, next: SoloSnapshot) {
-    const { orbs, activity, ...saved } = next;
+    const { orbs, activity, treasures, ...saved } = next;
     await tx.runAsync('INSERT INTO solo_save (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload', JSON.stringify(saved));
+    const treasureIds = new Set(treasures.map(box => box.id));
+    const previousTreasures = new Map(previous?.treasures.map(box => [box.id, box]));
+    for (const box of previous?.treasures ?? []) {
+      if (!treasureIds.has(box.id)) await tx.runAsync('DELETE FROM treasures WHERE id = ?', box.id);
+    }
+    for (const box of treasures) {
+      if (!sameTreasure(previousTreasures.get(box.id), box)) {
+        await tx.runAsync('INSERT INTO treasures (id, payload) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload', box.id, JSON.stringify(box));
+      }
+    }
     const retained = new Set(orbs.map(orb => orb.id));
     const existing = new Set(previous?.orbs.map(orb => orb.id));
     for (const orb of previous?.orbs ?? []) {
@@ -188,6 +238,7 @@ export function createRepository(open: () => Promise<SqlDatabase>) {
           else if (changed) {
             await tx.runAsync('DELETE FROM orbs');
             await tx.runAsync('DELETE FROM activity');
+            await tx.runAsync('DELETE FROM treasures');
             await tx.runAsync('DELETE FROM solo_save');
           }
           return next;

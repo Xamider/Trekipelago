@@ -1,5 +1,7 @@
 /** Probabilities are fractions: 0.2 means a 20% chance. */
 export interface SoloConfig {
+  maxTreasureRewards?: number;
+  treasureSpawnIntervalMinutes?: number;
   radiusMeters: number;
   baseChance: number;
   maxDistanceMeters: number;
@@ -23,6 +25,14 @@ export interface Orb {
   latitude: number;
   longitude: number;
   spawnedAt: number;
+}
+
+export interface TreasureBox extends Orb {
+  minigame?: import('./maze').TreasureMinigame;
+  rewardGranted?: boolean;
+  collectedAt?: number;
+  removedAt?: number;
+  reward?: EventItem;
 }
 
 export type ItemType = 
@@ -62,6 +72,14 @@ export interface ActivityEntry {
 }
 
 export interface SoloSnapshot {
+  treasureChallenge?: import('./maze').TreasureChallenge | null;
+  treasures: TreasureBox[];
+  /** Totals from resolved boxes pruned from the retained history. */
+  archivedTreasureCollected?: number;
+  archivedTreasureRewarded?: number;
+  nextTreasureSpawnAt: number;
+  treasureBatchSequence: number;
+  treasureRefillBlocked?: boolean;
   sessionId: string;
   config: SoloConfig;
   tracking: boolean;

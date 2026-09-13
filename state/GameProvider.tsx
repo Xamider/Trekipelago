@@ -1,7 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type PropsWithChildren } from 'react';
 import { Alert, AppState, Vibration } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { clearAllEffects, collectOrb as collect, injectTestEffects, resetSpawnClock, rollSpawn } from '../game/engine';
+import { canOpenTreasure, removeTreasureBox, beginTreasureChallenge, completeDefenseChallenge, completeTreasureChallenge, spawnTreasures, clearAllEffects, collectOrb as collect, injectTestEffects, resetSpawnClock, rollSpawn } from '../game/engine';
+import type { TowerPlacement } from '../game/towerDefense';
+import type { TreasureChallenge } from '../game/maze';
 import type { EventItem, SoloConfig, SoloSnapshot } from '../game/types';
 import { repository } from '../storage/database';
 import { clearTrackingError, getTrackingError, subscribeTrackingErrors } from '../tracking/errors';
@@ -184,6 +186,10 @@ interface GameContextValue {
   resume(): Promise<boolean>;
   pause(): Promise<void>;
   collectOrb(id: string): Promise<void>;
+  beginTreasureChallenge(id: string): Promise<TreasureChallenge | null>;
+  completeDefenseChallenge(id: string, towers: readonly TowerPlacement[]): Promise<boolean>;
+  completeTreasureChallenge(id: string, path: readonly number[]): Promise<boolean>;
+  removeTreasureBox(id: string): Promise<void>;
   applyTestEffects(): Promise<void>;
   clearEffects(): Promise<void>;
   setPreferences(patch: Partial<AppPreferences>): Promise<void>;
@@ -274,8 +280,7 @@ export function GameProvider({ children }: PropsWithChildren) {
 
   const foreground = useCallback(async () => {
     clock.setVisible(true);
-    const rightNow = Date.now();
-    await repository.update(current => current ? resetSpawnClock(current, rightNow) : current);
+    await repository.update(current => current ? resetSpawnClock(current, Date.now()) : current);
     
     // Check permissions and force wake the GPS if tracking is currently active
     if (!busyRef.current) await checkTrackingPermissions();
@@ -349,14 +354,23 @@ export function GameProvider({ children }: PropsWithChildren) {
           const epoch = clock.capture();
           
           if (currentSave?.tracking && AppState.currentState === 'active') {
+            if (clock.permits(epoch) && !getTrackingError() && rightNow >= currentSave.nextTreasureSpawnAt) {
+              // Sample time when the queued transaction executes. A GPS write
+              // ahead of it must not be mistaken for a device-clock rollback.
+              await repository.update(current => current && current.sessionId === currentSave.sessionId
+                && clock.permits(epoch) && !getTrackingError()
+                ? spawnTreasures(current, current.sessionId, Date.now(), Math.random) : current);
+            }
+
             if (clock.permits(epoch) && !getTrackingError() && rightNow >= currentSave.nextSpawnAt) {
               const id = currentSave.sessionId;
               await repository.update(current => current && current.sessionId === id
-                ? rollSpawn(current, id, rightNow, clock.permits(epoch) && !getTrackingError(), Math.random) : current);
+                ? rollSpawn(current, id, Date.now(), clock.permits(epoch) && !getTrackingError(), Math.random) : current);
             }
 
-            const fixAgeMs = currentSave.lastFix ? rightNow - currentSave.lastFix.timestamp : Infinity;
-            if (fixAgeMs > 8_000) {
+            const latestSave = saveRef.current;
+            const fixAgeMs = latestSave?.lastFix ? Date.now() - latestSave.lastFix.timestamp : Infinity;
+            if (latestSave?.tracking && clock.permits(epoch) && !getTrackingError() && fixAgeMs > 8_000) {
               wakeGps();
               void startForegroundWatcher();
             }
@@ -427,6 +441,50 @@ export function GameProvider({ children }: PropsWithChildren) {
     resume: () => action(async () => { await resumeSoloTracking(true); }),
     pause: async () => {
       await action(async () => { await pauseSoloTracking(); });
+    },
+    removeTreasureBox: async id => {
+      const current = saveRef.current;
+      const epoch = clock.capture();
+      if (!current || !clock.permits(epoch) || getTrackingError()) return;
+      try {
+        await repository.update(snapshot => snapshot && clock.permits(epoch) && !getTrackingError()
+          ? removeTreasureBox(snapshot, current.sessionId, id, Date.now()) : snapshot);
+      } catch (reason) { await fail(reason); }
+    },
+    beginTreasureChallenge: async id => {
+      const current = saveRef.current;
+      const epoch = clock.capture();
+      if (!current || !clock.permits(epoch) || getTrackingError()) return null;
+      try {
+        const next = await repository.update(snapshot => snapshot && clock.permits(epoch) && !getTrackingError()
+          ? beginTreasureChallenge(snapshot, current.sessionId, id, Date.now(), Math.random) : snapshot);
+        return next && canOpenTreasure(next, current.sessionId, id, Date.now()) && next.treasureChallenge?.treasureId === id
+          ? next.treasureChallenge : null;
+      } catch (reason) { await fail(reason); return null; }
+    },
+    completeTreasureChallenge: async (id, path) => {
+      const current = saveRef.current;
+      const epoch = clock.capture();
+      const challenge = current?.treasureChallenge;
+      if (!current || challenge?.id !== id || !clock.permits(epoch) || getTrackingError()) return false;
+      try {
+        const next = await repository.update(snapshot => snapshot && clock.permits(epoch) && !getTrackingError()
+          ? completeTreasureChallenge(snapshot, current.sessionId, id, path, Date.now()) : snapshot);
+        return !!next && next.sessionId === current.sessionId
+          && next.treasures.some(box => box.id === challenge.treasureId && box.collectedAt !== undefined);
+      } catch (reason) { await fail(reason); return false; }
+    },
+    completeDefenseChallenge: async (id, towers) => {
+      const current = saveRef.current;
+      const epoch = clock.capture();
+      const challenge = current?.treasureChallenge;
+      if (!current || challenge?.id !== id || !clock.permits(epoch) || getTrackingError()) return false;
+      try {
+        const next = await repository.update(snapshot => snapshot && clock.permits(epoch) && !getTrackingError()
+          ? completeDefenseChallenge(snapshot, current.sessionId, id, towers, Date.now()) : snapshot);
+        return !!next && next.sessionId === current.sessionId
+          && next.treasures.some(box => box.id === challenge.treasureId && box.collectedAt !== undefined);
+      } catch (reason) { await fail(reason); return false; }
     },
     collectOrb: async id => {
       const current = saveRef.current;

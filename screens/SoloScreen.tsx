@@ -6,7 +6,7 @@ import { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import { EffectTooltip } from '../components';
 import { AppButton, AppHeader, AppScreen, AppText, AssetIcon, Card, Field, Notice, SectionLabel, formatDistance } from '../components/ui';
-import { DEFAULT_SOLO_CONFIG, SPEED_LEVELS_MPS, validateConfig } from '../game/engine';
+import { DEFAULT_SOLO_CONFIG, treasureProgress, SPEED_LEVELS_MPS, validateConfig } from '../game/engine';
 import { SoloConfig } from '../game/types';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { useGame } from '../state/GameProvider';
@@ -14,6 +14,8 @@ import { theme } from '../theme';
 
 function fieldsFor(config: SoloConfig) {
   return {
+    maxTreasureRewards: String(config.maxTreasureRewards ?? 10),
+    treasureInterval: String(config.treasureSpawnIntervalMinutes ?? 30),
     radius: String(config.radiusMeters),
     chance: String(config.baseChance * 100),
     maxDistance: String(config.maxDistanceMeters / 1000),
@@ -35,6 +37,8 @@ export function SoloScreen({ navigation }: NativeStackScreenProps<RootStackParam
 
   const submit = async () => {
     const config: SoloConfig = {
+      maxTreasureRewards: Number(fields.maxTreasureRewards),
+      treasureSpawnIntervalMinutes: Number(fields.treasureInterval),
       radiusMeters: 100,
       baseChance: Number(fields.chance) / 100,
       maxDistanceMeters: Number(fields.maxDistance) * 1000,
@@ -68,6 +72,8 @@ export function SoloScreen({ navigation }: NativeStackScreenProps<RootStackParam
           <View style={styles.summaryDetails}>
             <AppText style={styles.detailText}>Distance rewards: every {save.config.rewardIntervalMeters}m ({save.distanceItemsClaimed ?? 0} claimed)</AppText>
             <AppText style={styles.detailText}>Orb rewards: every {save.config.orbsPerReward} orbs ({save.orbItemsClaimed ?? 0} claimed)</AppText>
+            <AppText style={styles.detailText}>Treasures collected: {treasureProgress(save).collected} | Items: {treasureProgress(save).rewarded}/{treasureProgress(save).limit}</AppText>
+            <AppText style={styles.detailText}>Treasure boxes: every {save.config.treasureSpawnIntervalMinutes ?? 30} minutes</AppText>
             <AppText style={styles.detailText}>Region radius: {save.config.radiusMeters} m</AppText>
             {(() => {
               const hasDropBoost = Boolean(save.effects?.some(e => e.type === 'boost_drop_2x'));
@@ -173,6 +179,12 @@ export function SoloScreen({ navigation }: NativeStackScreenProps<RootStackParam
           </View>
         </View>
 
+        <Field label="Treasure reward limit" value={fields.maxTreasureRewards}
+          onChangeText={maxTreasureRewards => setFields({ ...fields, maxTreasureRewards })} keyboardType="number-pad"
+          hint="Maximum boxes awarding items. Further boxes count as collected without items. Zero disables treasure rewards." />
+        <Field label="Treasure interval (minutes)" value={fields.treasureInterval}
+          onChangeText={treasureInterval => setFields({ ...fields, treasureInterval })} keyboardType="number-pad"
+          hint="Adds 2 or 3 boxes within 2 km. Collect all boxes for an immediate refill; removing any box makes you wait for the next scheduled spawn." />
         <View style={styles.buffRatioSection}>
           <View style={styles.buffRatioHeader}>
             <AppText style={styles.buffRatioLabel}>FILLER ITEMS RATIO</AppText>
