@@ -4,17 +4,18 @@ import { Feather } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { EffectTooltip, LocationMap, UnsupportedPlatform } from '../components';
 import { AppText, AssetIcon, formatDistance } from '../components/ui';
-import { isFreshFix, SPEED_LEVELS_MPS } from '../game/engine';
+import { treasureProgress, distanceBetween, isTreasureAvailable, isFreshFix, SPEED_LEVELS_MPS } from '../game/engine';
 import { ItemType } from '../game/types';
 import { usePointsOfInterest } from '../services';
 import type { RootStackParamList } from '../navigation/AppNavigator';
 import { useGame } from '../state/GameProvider';
 import { designAssets, theme } from '../theme';
+import { TreasurePopup } from '../components/TreasurePopup';
 
 function effectConfig(type: ItemType, expiresAt?: number) {
   const remainingSec = expiresAt ? Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)) : null;
@@ -47,25 +48,42 @@ function effectConfig(type: ItemType, expiresAt?: number) {
 }
 
 export function MapScreen() {
-  const { save, preferences, busy, error, status, collectOrb } = useGame();
+  const { save, preferences, busy, error, status, collectOrb, beginTreasureChallenge, removeTreasureBox } = useGame();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const [now, setNow] = useState(() => Date.now());
+  const [, refreshClock] = useState(0);
   const [recenterVersion, setRecenterVersion] = useState(0);
+  const focused = useIsFocused();
+  const [treasureSelection, setTreasureSelection] = useState<{ id: string; sessionId: string; anchor: { x: number; y: number } } | null>(null);
+  const [viewport, setViewport] = useState({ width: 0, height: 0 });
+  const selectedTreasure = save?.sessionId === treasureSelection?.sessionId
+    ? save?.treasures.find(box => box.id === treasureSelection?.id && isTreasureAvailable(box)) : undefined;
+  useEffect(() => {
+    if (!focused || !selectedTreasure) setTreasureSelection(null);
+  }, [focused, selectedTreasure?.id]);
+
   const [selectedEffect, setSelectedEffect] = useState<{ type: string; level?: number; expiresAt?: number } | null>(null);
   const insets = useSafeAreaInsets();
-  const freshFix = save ? isFreshFix(save, now) : false;
+  // A GPS fix can arrive between timer ticks. Compare it with the actual render
+  // time so a new fix never looks like a future (unusable) location.
+  const freshFix = save ? isFreshFix(save) : false;
   const { pointsOfInterest } = usePointsOfInterest(
     save?.lastFix ?? null,
     preferences.showPOI && freshFix,
   );
 
   useEffect(() => {
-    if (!save?.effects?.length) return;
-    const interval = setInterval(() => setNow(Date.now()), 1000);
+    if (!save || !focused) return;
+    const interval = setInterval(() => refreshClock(tick => tick + 1), 1000);
     return () => clearInterval(interval);
-  }, [save?.effects?.length]);
+  }, [Boolean(save), focused]);
 
   if (Platform.OS !== 'android') return <UnsupportedPlatform />;
+
+  const openTreasure = (id: string, anchor: { x: number; y: number }) => {
+    if (!save?.treasures.some(box => box.id === id && isTreasureAvailable(box))) return;
+    setSelectedEffect(null);
+    setTreasureSelection({ id, anchor, sessionId: save.sessionId });
+  };
 
   const maxDistanceGoal = save?.config?.maxDistanceMeters || 5000;
   const progress = save ? Math.min(1, Math.max(0, save.distanceMeters / maxDistanceGoal)) : 0;
@@ -114,13 +132,15 @@ export function MapScreen() {
   const isOrbsMax = Boolean(save && (save.collectedCount >= maxOrbsGoal || ((save.orbItemPool?.length ?? 0) > 0 && (save.orbItemsClaimed ?? 0) >= (save.orbItemPool?.length ?? 0))));
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} onLayout={event => { const { width, height } = event.nativeEvent.layout; setViewport({ width, height }); }}>
       {save?.lastFix ? (
         <LocationMap
           key={save.sessionId}
           location={save.lastFix}
           radiusMeters={save.config.radiusMeters}
           orbs={save.orbs}
+          treasures={save.treasures}
+          onSelectTreasureBox={openTreasure}
           mapStyle={preferences.mapStyle}
           pointsOfInterest={pointsOfInterest}
           canCollect={canCollect}
@@ -294,6 +314,12 @@ export function MapScreen() {
             })}
           </View>
 
+          {save && <View pointerEvents="none" style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Feather name="package" size={13} color={theme.colors.primary} />
+            <AppText style={{ fontSize: 12, color: theme.colors.secondary }}>
+              Treasures collected: {treasureProgress(save).collected} | Items: {treasureProgress(save).rewarded}/{treasureProgress(save).limit}
+            </AppText>
+          </View>}
           {/* Next Reward Notices */}
           <View pointerEvents="none" style={styles.rewardsRow}>
             {isDistMax ? (
@@ -337,6 +363,30 @@ export function MapScreen() {
           </Pressable>
         </View>
       </View>
+
+      {focused && selectedTreasure && treasureSelection && viewport.width > 0 && save && <TreasurePopup
+        key={selectedTreasure.id}
+        box={selectedTreasure}
+        anchor={treasureSelection.anchor}
+        viewport={viewport}
+        canCollect={canCollect && !!save.lastFix && distanceBetween(save.lastFix, selectedTreasure) <= save.config.radiusMeters}
+        collectionHint={!save.tracking ? 'Resume tracking to collect this reward.'
+          : !freshFix ? 'Waiting for fresh GPS to check collection range.'
+          : save.lastFix && distanceBetween(save.lastFix, selectedTreasure) > save.config.radiusMeters
+            ? `Walk within ${save.config.radiusMeters} m to collect this reward.`
+            : 'Win a minigame to open this box.'}
+        disabled={busy || !!error}
+        onClose={() => setTreasureSelection(null)}
+        rewardAvailable={treasureProgress(save).rewarded < treasureProgress(save).limit}
+        onCollect={async () => {
+          const challenge = await beginTreasureChallenge(selectedTreasure.id);
+          if (!challenge) return false;
+          if (challenge.kind === 'tower_defense') navigation.navigate('TowerDefense', { challengeId: challenge.id });
+          else navigation.navigate('Labyrinth', { challengeId: challenge.id });
+          return true;
+        }}
+        onRemove={() => removeTreasureBox(selectedTreasure.id)}
+      />}
 
       {/* Floating Tooltip for Buff/Debuff description */}
       <EffectTooltip

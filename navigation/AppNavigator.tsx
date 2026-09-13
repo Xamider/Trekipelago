@@ -12,12 +12,16 @@ import { ConsoleScreen } from '../screens/ConsoleScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { MapScreen } from '../screens/MapScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
+import { TowerDefenseScreen } from '../screens/TowerDefenseScreen';
+import { LabyrinthScreen } from '../screens/LabyrinthScreen';
 import { SoloScreen } from '../screens/SoloScreen';
 import { useGame, useGameStatus } from '../state/GameProvider';
 import { theme } from '../theme';
 
 export type ExpeditionTabParamList = { Map: undefined; Console: undefined };
 export type RootStackParamList = {
+  TowerDefense: { challengeId: string };
+  Labyrinth: { challengeId: string };
   Home: undefined;
   Solo: undefined;
   Expedition: NavigatorScreenParams<ExpeditionTabParamList>;
@@ -117,7 +121,9 @@ export function AppNavigator() {
   
   return <NavigationContainer ref={navigationRef} theme={{ ...DarkTheme, colors: { ...DarkTheme.colors, primary: theme.colors.primary, background: theme.colors.background, card: theme.colors.surface, text: theme.colors.text, border: theme.colors.border } }}>
     <SafeAreaView edges={['bottom']} style={styles.root}>
-      <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.colors.background } }}>
+      <Stack.Navigator initialRouteName="Home" screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.colors.background } }}>
+        <Stack.Screen name="TowerDefense" component={TowerDefenseScreen} />
+        <Stack.Screen name="Labyrinth" component={LabyrinthScreen} />
         <Stack.Screen name="Home" component={HomeScreen} />
         <Stack.Screen name="Solo" component={SoloScreen} />
         <Stack.Screen name="Expedition" component={ExpeditionTabs} />
@@ -141,7 +147,7 @@ function GlobalTrackingStripWrapper() {
     return unsubscribe;
   }, []);
 
-  if (currentRoute === 'Map' || currentRoute === 'Console') {
+  if (currentRoute === 'Map' || currentRoute === 'Console' || currentRoute === 'Labyrinth' || currentRoute === 'TowerDefense') {
     return null;
   }
 

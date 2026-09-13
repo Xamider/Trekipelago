@@ -31,6 +31,8 @@ const sequence = (...values: number[]) => {
 
 test('default settings and new save have exactly one local journey worth of state', () => {
   assert.deepEqual(DEFAULT_SOLO_CONFIG, {
+    maxTreasureRewards: 10,
+    treasureSpawnIntervalMinutes: 30,
     radiusMeters: 100,
     baseChance: 0.2,
     maxDistanceMeters: 5000,
@@ -211,6 +213,25 @@ test('a reverse-ordered batch counts the same distance as forward order', () => 
   const forward = applyLocations(freshSave(), SESSION, [fix(20, 0, START + 5_000), fix(40, 0, START + 10_000)], START + 10_000);
   const reversed = applyLocations(freshSave(), SESSION, [fix(40, 0, START + 10_000), fix(20, 0, START + 5_000)], START + 10_000);
   near(reversed.distanceMeters, forward.distanceMeters);
+});
+
+test('live freshness checks accept GPS updates between screen ticks and still expire old fixes', t => {
+  let now = START;
+  t.mock.method(Date, 'now', () => now);
+  let save = freshSave();
+  assert.equal(isFreshFix(save), true);
+
+  // GPS delivers a new fix before the screen's next one-second timer tick.
+  for (const elapsed of [250, 750, 1_500, 2_250]) {
+    now = START + elapsed;
+    save = applyLocations(save, SESSION, [fix(0, 0, now)], now);
+    assert.equal(isFreshFix(save), true, 'A newly delivered fix stays usable immediately');
+  }
+  now += 30_000;
+  assert.equal(isFreshFix(save), true);
+  now++;
+  assert.equal(isFreshFix(save), false, 'GPS expiry still works without another location update');
+  assert.equal(isFreshFix({ ...save, lastFix: fix(0, 0, now + 1) }), false, 'Actual future timestamps stay unusable');
 });
 
 test('a device clock rollback resets timing/GPS baselines while preserving progress', () => {
